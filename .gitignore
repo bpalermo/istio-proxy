@@ -31,3 +31,4 @@ eclipse-*bin/
 /.sass-cache
 # User-specific .bazelrc
 user.bazelrc
+clang.bazelrc

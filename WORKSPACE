@@ -22,10 +22,10 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 # 1. Determine SHA256 `wget https://github.com/envoyproxy/envoy/archive/$COMMIT.tar.gz && sha256sum $COMMIT.tar.gz`
 # 2. Update .bazelversion, envoy.bazelrc and .bazelrc if needed.
 #
-# Commit date: 2024-08-12
-ENVOY_SHA = "210816523a0d71fda4cce7a3635e29ae7ea02615"
+# Commit date: 2025-05-29
+ENVOY_SHA = "e9fb31fa22ac1bce2fe24d55810ab15f0fc4cf65"
 
-ENVOY_SHA256 = "ac110c1de3ec048a99fe2bb14af94ddbd0c83e44882342d7d8b1cf3a3327772c"
+ENVOY_SHA256 = "e39d37f5b721024633ce65d2af1528646b1fe44b75f150f84c6210db95a50af3"
 
 ENVOY_ORG = "envoyproxy"
 
@@ -44,9 +44,9 @@ http_archive(
 # 2. Update .bazelversion, envoy.bazelrc and .bazelrc if needed.
 #
 # Commit date: 2024-08-12
-ISTIO_SHA = "924a267f9052bc0e8c5e22da742abccf91452085"
+ISTIO_SHA = "19d31b12e62848c5e9f3f786c6c9a650ebc00b64"
 
-ISTIO_SHA256 = "a02bf58c25306a830230f992b73eebdec9d1a73133a09bd6833ca6f564f0b70c"
+ISTIO_SHA256 = "729edc510635701fd179eba1b7e724b62efe7bc5db0b89caca3cd59990c8b67f"
 
 ISTIO_ORG = "istio"
 
@@ -63,13 +63,13 @@ http_archive(
 
 load("@envoy//bazel:api_binding.bzl", "envoy_api_binding")
 
-envoy_api_binding()
-
 local_repository(
     name = "envoy_build_config",
     # Relative paths are also supported.
     path = "bazel/extension_config",
 )
+
+envoy_api_binding()
 
 load("@envoy//bazel:api_repositories.bzl", "envoy_api_dependencies")
 
