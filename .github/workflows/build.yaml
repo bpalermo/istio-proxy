@@ -121,7 +121,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY_IMAGE }}
           tags: |
-            type=sha,format=long
+            type=sha,format=long,prefix=
       - name: Create manifest list and push
         working-directory: ${{ runner.temp }}/digests
         run: |
