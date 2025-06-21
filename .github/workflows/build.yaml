@@ -64,7 +64,7 @@ jobs:
           BAZEL_BUILD_ARGS="${BAZEL_BUILD_ARGS} --stamp"
           CONFIG_PARAMS="--config=ci --config=release --remote_header=x-buildbuddy-api-key=${{ secrets.BUILDBUDDY_ORG_API_KEY }}"
   
-          bazel build ${BAZEL_BUILD_ARGS} ${CONFIG_PARAMS} //:envoy
+          bazel build ${BAZEL_BUILD_ARGS} ${CONFIG_PARAMS} //:envoy_tar
           
           ARCH_NAME="k8"
           case "$(uname -m)" in

@@ -11,6 +11,6 @@ esac
 
 BAZEL_OUT="$(bazel info ${BAZEL_BUILD_ARGS} output_path)/${ARCH_NAME}-opt/bin"
 
-bazel build ${BAZEL_BUILD_ARGS} ${CONFIG_PARAMS} //:envoy
+bazel build ${BAZEL_BUILD_ARGS} ${CONFIG_PARAMS} //:envoy_tar
 
 docker build -f ./Dockerfile --tag istio-proxy:latest "${BAZEL_OUT}"
