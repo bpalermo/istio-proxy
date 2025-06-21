@@ -1,0 +1,5 @@
+.github
+bazel-*
+.gitignore
+LICENSE
+README.md

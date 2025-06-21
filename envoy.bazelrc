@@ -90,7 +90,8 @@ build:clang --action_env=BAZEL_COMPILER=clang
 build:clang --linkopt=-fuse-ld=lld
 build:clang --action_env=CC=clang --host_action_env=CC=clang
 build:clang --action_env=CXX=clang++ --host_action_env=CXX=clang++
-build:clang --incompatible_enable_cc_toolchain_resolution=false
+build:clang --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+build:clang --incompatible_enable_cc_toolchain_resolution=true
 
 # Flags for Clang + PCH
 build:clang-pch --spawn_strategy=local
@@ -222,8 +223,10 @@ build:libc++ --action_env=BAZEL_CXXOPTS=-stdlib=libc++
 build:libc++ --action_env=BAZEL_LINKLIBS=-l%:libc++.a:-l%:libc++abi.a
 build:libc++ --action_env=BAZEL_LINKOPTS=-lm:-pthread
 build:libc++ --define force_libcpp=enabled
+build:clang-libc++ --config=clang
 build:clang-libc++ --config=libc++
 build:clang-libc++ --action_env=ARFLAGS=r
+
 build:arm64-clang-libc++ --config=clang-libc++
 
 build:libc++20 --config=libc++
@@ -397,7 +400,7 @@ build:compile-time-options --@envoy//source/extensions/filters/http/kill_request
 
 # Docker sandbox
 # NOTE: Update this from https://github.com/envoyproxy/envoy-build-tools/blob/main/toolchains/rbe_toolchains_config.bzl#L8
-build:docker-sandbox --experimental_docker_image=envoyproxy/envoy-build-ubuntu:cb86d91cf406995012e330ab58830e6ee10240cb@sha256:d38457962937370aa867620a5cc7d01c568621fc0d1a57e044847599372a8571
+build:docker-sandbox --experimental_docker_image=envoyproxy/envoy-build-ubuntu:0e6c302f99465aa73bb43e4971014aceb661d711@sha256:5396fc18c2ebfa2a5bb05a9ef28b60585a0ca9a5a07eddec95c7b5aa81da6319
 build:docker-sandbox --spawn_strategy=docker
 build:docker-sandbox --strategy=Javac=docker
 build:docker-sandbox --strategy=Closure=docker
@@ -567,7 +570,7 @@ common:bes-envoy-engflow --bes_timeout=3600s
 common:bes-envoy-engflow --bes_upload_mode=fully_async
 common:bes-envoy-engflow --nolegacy_important_outputs
 common:rbe-envoy-engflow --remote_executor=grpcs://mordenite.cluster.engflow.com
-common:rbe-envoy-engflow --remote_default_exec_properties=container-image=docker://gcr.io/envoy-ci/envoy-build@sha256:56b66cc84065c88a141963cedbbe4198850ffae0dacad769f516d0e9081439da
+common:rbe-envoy-engflow --remote_default_exec_properties=container-image=docker://gcr.io/envoy-ci/envoy-build@sha256:5396fc18c2ebfa2a5bb05a9ef28b60585a0ca9a5a07eddec95c7b5aa81da6319
 common:rbe-envoy-engflow --jobs=200
 common:rbe-envoy-engflow --define=engflow_rbe=true
 

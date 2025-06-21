@@ -61,6 +61,29 @@ http_archive(
     url = "https://github.com/" + ISTIO_ORG + "/" + ISTIO_REPO + "/archive/" + ISTIO_SHA + ".tar.gz",
 )
 
+http_archive(
+    name = "toolchains_llvm",
+    sha256 = "fded02569617d24551a0ad09c0750dc53a3097237157b828a245681f0ae739f8",
+    strip_prefix = "toolchains_llvm-v1.4.0",
+    canonical_id = "v1.4.0",
+    url = "https://github.com/bazel-contrib/toolchains_llvm/releases/download/v1.4.0/toolchains_llvm-v1.4.0.tar.gz",
+)
+
+load("@toolchains_llvm//toolchain:deps.bzl", "bazel_toolchain_dependencies")
+
+bazel_toolchain_dependencies()
+
+load("@toolchains_llvm//toolchain:rules.bzl", "llvm_toolchain")
+
+llvm_toolchain(
+    name = "llvm_toolchain",
+    llvm_version = "18.1.8",
+)
+
+load("@llvm_toolchain//:toolchains.bzl", "llvm_register_toolchains")
+
+llvm_register_toolchains()
+
 load("@envoy//bazel:api_binding.bzl", "envoy_api_binding")
 
 local_repository(
