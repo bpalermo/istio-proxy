@@ -5,21 +5,19 @@ import %workspace%/istio.bazelrc
 build:remote-cache --bes_results_url=https://app.buildbuddy.io/invocation/
 build:remote-cache --bes_backend=grpcs://remote.buildbuddy.io
 build:remote-cache --remote_cache=grpcs://remote.buildbuddy.io
-build:remote-cache --remote_download_toplevel # Helps remove network bottleneck if caching is enabled
-build:remote-cache --remote_timeout=10m
 build:remote-cache --remote_cache_compression
 build:remote-cache --nolegacy_important_outputs
 build:remote-cache --experimental_remote_cache_compression_threshold=100
 
-# build:remote --remote_executor=grpcs://remote.buildbuddy.io
-# build:remote --jobs=100
-
-build:remote --remote_build_event_upload=minimal
-build:remote --nolegacy_important_outputs
-build:remote --noslim_profile
-build:remote --experimental_profile_include_target_label
-build:remote --experimental_profile_include_primary_output
+build:rbe-buildbuddy --remote_executor=grpcs://remote.buildbuddy.io
+build:rbe-buildbuddy --jobs=100
+build:rbe-buildbuddy --remote_build_event_upload=minimal
+build:rbe-buildbuddy --nolegacy_important_outputs
+build:rbe-buildbuddy --noslim_profile
+build:rbe-buildbuddy --experimental_profile_include_target_label
+build:rbe-buildbuddy --experimental_profile_include_primary_output
 
 build:ci --config=remote-cache
+# build:ci --config=rbe-buildbuddy
 build:ci --build_metadata=VISIBILITY=PUBLIC
 build:ci --build_metadata=ROLE=CI
