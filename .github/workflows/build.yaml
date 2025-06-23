@@ -18,13 +18,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             platform: linux/amd64
           - os: ubuntu-22.04-arm
             platform: linux/arm64
     steps:
+      - name: Maximize build space
+        uses: AdityaGarg8/remove-unwanted-software@v5
+        with:
+          remove-android: 'true'
+          remove-dotnet: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
       - name: Checkout
         uses: actions/checkout@v4
+      - name: APT packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libtinfo5
+          sudo rm -rf /var/lib/apt/lists/*
       - name: Prepare
         run: |
           platform=${{ matrix.platform }}
@@ -45,7 +57,7 @@ jobs:
       - name: Install LLVM and Clang
         uses: KyleMayes/install-llvm-action@v2
         with:
-          version: "17.0"
+          version: "18.1"
           directory: ${{ runner.temp }}/llvm
       - name: Setup Build
         run: |
