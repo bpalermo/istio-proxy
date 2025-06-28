@@ -6,7 +6,7 @@ on:
       - main
 
 env:
-  REGISTRY_IMAGE: palermo/istio-proxy
+  CARGO_BAZEL_REPIN: true
 
 jobs:
   build:
