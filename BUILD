@@ -1,7 +1,6 @@
-load(
-    "@envoy//bazel:envoy_build_system.bzl",
-    "envoy_cc_binary",
-)
+load("@container_structure_test//:defs.bzl", "container_structure_test")
+load("@envoy//bazel:envoy_build_system.bzl", "envoy_cc_binary")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
 
 # Copyright 2016 Istio Authors. All Rights Reserved.
 #
@@ -51,6 +50,47 @@ pkg_tar(
     srcs = [":envoy"],
     extension = "tar.gz",
     mode = "0755",
+    owner = "65532.65532",
     package_dir = "/usr/local/bin/",
     tags = ["manual"],
+)
+
+pkg_tar(
+    name = "rust_module_tar",
+    srcs = ["//filters/http/rust_module"],
+    extension = "tar.gz",
+    mode = "0755",
+    owner = "65532.65532",
+    package_dir = "/usr/local/lib/",
+    visibility = ["//visibility:public"],
+)
+
+oci_image(
+    name = "image",
+    base = "@distroless_base_nossl_debian12_nonroot",
+    entrypoint = ["/usr/local/bin/envoy"],
+    tars = [
+        ":envoy_tar",
+        ":rust_module_tar",
+    ],
+)
+
+oci_push(
+    name = "push",
+    image = ":image",
+    remote_tags = [],
+    repository = "index.docker.io/palermo/istio-proxy",
+)
+
+oci_load(
+    name = "load",
+    image = ":image",
+    repo_tags = ["palermo/istio-proxy:latest"],
+)
+
+container_structure_test(
+    name = "image_test",
+    configs = ["testdata/image.yaml"],
+    image = ":image",
+    local = True,
 )
