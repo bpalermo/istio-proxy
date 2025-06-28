@@ -51,12 +51,12 @@ jobs:
           bazelisk-cache: true
           disk-cache: ${{ github.workflow }}-${{ runner.os }}
           repository-cache: true
-      - name: Build ${{ matrix.os }}
+      - name: Build ${{ runner.arch }}
         run: |
           bazel build --config=ci --remote_header=x-buildbuddy-api-key=${{ secrets.BUILDBUDDY_ORG_API_KEY }} //...
-      - name: Push ${{ matrix.os }}
+      - name: Push ${{ runner.arch }}
         run: |
-          bazel run //:push -- --repository ${{ env.REGISTRY_IMAGE }} --tag ${{ github.sha }}-${{ os.arch }}
+          bazel run //:push -- --repository ${{ env.REGISTRY_IMAGE }} --tag ${{ github.sha }}-${{ runner.arch }}
 
   merge:
     runs-on: ubuntu-22.04
@@ -71,7 +71,6 @@ jobs:
           username: ${{ vars.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Create manifest and push
-        working-directory: ${{ runner.temp }}/digests
         run: |
           docker buildx imagetools create --tag ${{ env.REGISTRY_IMAGE }}:${{ github.sha }} \
             ${{ env.REGISTRY_IMAGE }}:${{ github.sha }}-arm64 ${{ env.REGISTRY_IMAGE }}:${{ github.sha }}-amd64
