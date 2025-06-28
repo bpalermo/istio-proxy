@@ -1,0 +1,10 @@
+schemaVersion: '2.0.0'
+metadataTest:
+  entrypoint: ["/usr/local/bin/envoy"]
+fileExistenceTests:
+  - name: 'rust_module'
+    path: '/usr/local/lib/librust_module.so'
+    shouldExist: true
+    permissions: '-rwxr-xr-x'
+    uid: 65532
+    gid: 65532

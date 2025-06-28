@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  pull_request:
+    branches:
+      - main
+
+env:
+  REGISTRY_IMAGE: palermo/istio-proxy
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-22.04-arm]
+    steps:
+      - name: Maximize build space
+        uses: AdityaGarg8/remove-unwanted-software@v5
+        with:
+          remove-android: 'true'
+          remove-dotnet: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: APT packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libtinfo5
+          sudo rm -rf /var/lib/apt/lists/*
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@v2
+        with:
+          version: "18.1"
+          directory: ${{ runner.temp }}/llvm
+      - name: Setup Build
+        run: |
+          bazel/setup_clang.sh "${{ env.LLVM_PATH }}"
+          echo "build --config=clang" >> user.bazelrc
+      - uses: bazel-contrib/setup-bazel@0.15.0
+        with:
+          bazelisk-cache: true
+          disk-cache: ${{ github.workflow }}-${{ runner.os }}
+          repository-cache: true
+      - name: Test
+        env:
+          CARGO_BAZEL_REPIN: true
+        run: |
+          bazel test --config=ci --remote_header=x-buildbuddy-api-key=${{ secrets.BUILDBUDDY_ORG_API_KEY }} //...
