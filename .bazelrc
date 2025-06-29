@@ -16,6 +16,7 @@ build:rbe-buildbuddy --noslim_profile
 build:rbe-buildbuddy --experimental_profile_include_target_label
 build:rbe-buildbuddy --experimental_profile_include_primary_output
 
+build:ci --config=release
 build:ci --config=remote-cache
 build:ci --build_metadata=VISIBILITY=PUBLIC
 build:ci --build_metadata=ROLE=CI
