@@ -9,6 +9,11 @@ build:remote-cache --remote_cache_compression
 build:remote-cache --nolegacy_important_outputs
 build:remote-cache --experimental_remote_cache_compression_threshold=100
 
+build:ci-remote-cache --bes_results_url=https://app.buildbuddy.io/invocation/
+build:ci-remote-cache --bes_backend=grpcs://remote.buildbuddy.io
+build:ci-remote-cache --remote_cache=grpcs://remote.buildbuddy.io
+build:ci-remote-cache --remote_download_toplevel # Helps remove network bottleneck if caching is enabled
+
 build:rbe-buildbuddy --remote_executor=grpcs://remote.buildbuddy.io
 build:rbe-buildbuddy --jobs=200
 build:rbe-buildbuddy --nolegacy_important_outputs
@@ -17,6 +22,6 @@ build:rbe-buildbuddy --experimental_profile_include_target_label
 build:rbe-buildbuddy --experimental_profile_include_primary_output
 
 build:ci --config=release
-build:ci --config=remote-cache
+build:ci --config=ci-remote-cache
 build:ci --build_metadata=VISIBILITY=PUBLIC
 build:ci --build_metadata=ROLE=CI
