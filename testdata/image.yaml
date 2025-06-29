@@ -1,6 +1,10 @@
 schemaVersion: '2.0.0'
 metadataTest:
   entrypoint: ["/usr/local/bin/envoy"]
+  user: 65532
+  envVars:
+    - key: ENVOY_DYNAMIC_MODULES_SEARCH_PATH
+      value: /usr/local/lib
 fileExistenceTests:
   - name: 'rust_module'
     path: '/usr/local/lib/librust_module.so'

@@ -67,8 +67,11 @@ pkg_tar(
 
 oci_image(
     name = "image",
-    base = "@distroless_base_nossl_debian12_nonroot",
+    base = "@distroless_cc_debian12_nonroot",
     entrypoint = ["/usr/local/bin/envoy"],
+    env = {
+        "ENVOY_DYNAMIC_MODULES_SEARCH_PATH": "/usr/local/lib",
+    },
     tars = [
         ":envoy_tar",
         ":rust_module_tar",
