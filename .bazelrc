@@ -8,6 +8,7 @@ build:remote-cache --remote_cache=grpcs://remote.buildbuddy.io
 build:remote-cache --remote_cache_compression
 build:remote-cache --nolegacy_important_outputs
 build:remote-cache --experimental_remote_cache_compression_threshold=100
+build:remote-cache --experimental_remote_cache_ttl
 
 build:rbe-buildbuddy --remote_executor=grpcs://remote.buildbuddy.io
 build:rbe-buildbuddy --jobs=200
