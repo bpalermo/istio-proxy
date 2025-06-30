@@ -61,7 +61,7 @@ jobs:
           bazel build --config=ci --remote_header=x-buildbuddy-api-key=${{ secrets.BUILDBUDDY_ORG_API_KEY }} //...
       - name: Push ${{ runner.arch }}
         run: |
-          bazel run //:push -- --repository ${{ env.REGISTRY_IMAGE }} --tag ${{ github.sha }}-${{ matrix.arch }}
+          bazel run --config=ci --remote_header=x-buildbuddy-api-key=${{ secrets.BUILDBUDDY_ORG_API_KEY }} //:push -- --repository ${{ env.REGISTRY_IMAGE }} --tag ${{ github.sha }}-${{ matrix.arch }}
 
   merge:
     runs-on: ubuntu-22.04
