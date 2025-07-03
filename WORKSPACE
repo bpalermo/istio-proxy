@@ -62,6 +62,23 @@ load("@envoy//bazel:dependency_imports_extra.bzl", "envoy_dependency_imports_ext
 
 envoy_dependency_imports_extra()
 
+load("@rules_rust//crate_universe:defs.bzl", "crate", "crates_repository")
+
+crates_repository(
+    name = "crate_index",
+    cargo_lockfile = "//:Cargo.lock",
+    lockfile = "//:Cargo.Bazel.lock",
+    packages = {
+        "regex": crate.spec(
+            version = "1.11.1",
+        ),
+    },
+)
+
+load("@crate_index//:defs.bzl", "crate_repositories")
+
+crate_repositories()
+
 load("@container_structure_test//:repositories.bzl", "container_structure_test_register_toolchain")
 
 container_structure_test_register_toolchain(name = "cst")

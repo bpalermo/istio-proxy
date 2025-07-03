@@ -1,5 +1,6 @@
 use envoy_proxy_dynamic_modules_rust_sdk::*;
 
+mod oddeven;
 mod passthrough;
 
 declare_init_functions!(init, new_http_filter_config_fn);
@@ -31,6 +32,7 @@ fn new_http_filter_config_fn<EC: EnvoyHttpFilterConfig, EHF: EnvoyHttpFilter>(
 ) -> Option<Box<dyn HttpFilterConfig<EC, EHF>>> {
     let filter_config = std::str::from_utf8(filter_config).unwrap();
     match filter_name {
+        "oddeven" => Some(Box::new(oddeven::FilterConfig::new(filter_config))),
         "passthrough" => Some(Box::new(passthrough::FilterConfig::new(filter_config))),
         _ => panic!("Unknown filter name: {}", filter_name),
     }
