@@ -95,6 +95,19 @@ mod tests {
     fn test_filter() {
         let mut envoy_filter = envoy_proxy_dynamic_modules_rust_sdk::MockEnvoyHttpFilter::new();
         let mut oddeven_filter = Filter {};
+        
+        envoy_filter
+            .expect_get_request_header_value()
+            .withf(|name| name == "X-Nu-Routing")
+            .returning(|_| Some(EnvoyBuffer::new("s0-1234")))
+            .once();
+
+        envoy_filter
+            .expect_set_request_header()
+            .withf(|name, _value| name == "X-Nu-Hash")
+            .return_const(true)
+            .once();
+        
         assert_eq!(
             oddeven_filter.on_request_headers(&mut envoy_filter, false),
             abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::Continue
