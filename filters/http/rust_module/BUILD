@@ -10,6 +10,7 @@ rust_shared_library(
     ],
     deps = [
         "@envoy//source/extensions/dynamic_modules/sdk/rust:envoy_proxy_dynamic_modules_rust_sdk",
+        "@crate_index//:regex",
     ],
     visibility = ["//:__pkg__"],
 )
