@@ -1,8 +1,14 @@
 use envoy_proxy_dynamic_modules_rust_sdk::*;
 use regex::Regex;
+use std::sync::Arc;
+
+const ROUTING_REGEX_PATTERN: &str = r"\pL\d+-(\d+)";
+
+const ROUTING_HEADER: &str = "x-nu-routing";
+const HASH_HEADER: &str = "x-nu-hash";
 
 pub struct FilterConfig {
-    re: Regex,
+    re: Arc<Regex>,
 }
 
 impl FilterConfig {
@@ -12,7 +18,7 @@ impl FilterConfig {
     /// https://www.envoyproxy.io/docs/envoy/latest/api-v3/extensions/dynamic_modules/v3/dynamic_modules.proto#envoy-v3-api-msg-extensions-dynamic-modules-v3-dynamicmoduleconfig
     pub fn new(_filter_config: &str) -> Self {
         Self {
-            re: Regex::new(r"\pL\d+-(\d+)").unwrap(),
+            re: Arc::new(Regex::new(ROUTING_REGEX_PATTERN).expect("Invalid regex")),
         }
     }
 }
@@ -21,28 +27,22 @@ impl<EC: EnvoyHttpFilterConfig, EHF: EnvoyHttpFilter> HttpFilterConfig<EC, EHF> 
     /// This is called for each new HTTP filter.
     fn new_http_filter(&mut self, _envoy: &mut EC) -> Box<dyn HttpFilter<EHF>> {
         Box::new(Filter {
-            re: self.re.clone(),
+            re: Arc::clone(&self.re),
         })
     }
 }
 
 pub struct Filter {
     /// The regex to match against the header.
-    re: Regex,
+    re: Arc<Regex>,
 }
 
 impl Filter {
-    pub fn hash(&self, partition_id: &str) -> Option<String> {
-        let Some(caps) = self.re.captures(partition_id) else {
-            return None;
-        };
-        let Some(m) = caps.get(1) else {
-            return None;
-        };
-        match m.as_str().to_string().parse::<i64>() {
-            Ok(int) => Some((int % 2).to_string()),
-            _ => None
-        }
+    pub fn hash(&self, partition_id: &str) -> Option<&'static str> {
+        self.re.captures(partition_id)
+            .and_then(|caps| caps.get(1))
+            .and_then(|m| m.as_str().parse::<i64>().ok())
+            .map(|int| if int % 2 == 0 { "0" } else { "1" })
     }
 }
 
@@ -52,23 +52,43 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for Filter {
         envoy_filter: &mut EHF,
         _end_of_stream: bool,
     ) -> abi::envoy_dynamic_module_type_on_http_filter_request_headers_status {
-        let Some(header_value) = envoy_filter.get_request_header_value("x-nu-routing") else {
-            envoy_filter.send_response(403, vec![], Some(b"Access forbidden: missing routing header"));
-            return abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::StopIteration
+        let header_value = match envoy_filter.get_request_header_value(ROUTING_HEADER) {
+            Some(val) => val,
+            None => {
+                envoy_filter.send_response(
+                    403,
+                    vec![],
+                    Some(b"Access forbidden: missing x-nu-routing header"),
+                );
+                return abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::StopIteration;
+            }
         };
 
-        let binding = std::str::from_utf8(header_value.as_slice()).unwrap_or("");
-        if binding.is_empty() {
-            envoy_filter.send_response(400, vec![], Some(b"Bad request: empty routing header"));
-            return abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::StopIteration
-        }
-
-        let Some(hash) = self.hash(binding) else {
-            envoy_filter.send_response(400, vec![], Some(b"Bad request: invalid routing header format"));
-            return abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::StopIteration
+        let routing_header = match std::str::from_utf8(header_value.as_slice()) {
+            Ok(s) if !s.is_empty() => s,
+            _ => {
+                envoy_filter.send_response(
+                    400,
+                    vec![],
+                    Some(b"Bad request: empty or invalid routing header"),
+                );
+                return abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::StopIteration;
+            }
         };
 
-        envoy_filter.set_request_header("x-nu-hash", hash.as_bytes());
+        let hash = match self.hash(routing_header) {
+            Some(h) => h,
+            None => {
+                envoy_filter.send_response(
+                    400,
+                    vec![],
+                    Some(b"Bad request: invalid routing header format"),
+                );
+                return abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::StopIteration;
+            }
+        };
+
+        envoy_filter.set_request_header(HASH_HEADER, hash.as_bytes());
         abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::Continue
     }
 }
@@ -82,18 +102,18 @@ mod tests {
     fn test_filter() {
         let mut envoy_filter = envoy_proxy_dynamic_modules_rust_sdk::MockEnvoyHttpFilter::new();
         let mut filter = Filter {
-            re: Regex::new(r"\pL\d+-(\d+)").unwrap(),
+            re: Arc::new(Regex::new(ROUTING_REGEX_PATTERN).unwrap()),
         };
 
         envoy_filter
             .expect_get_request_header_value()
-            .withf(|name| name == "x-nu-routing")
+            .withf(|name| name == ROUTING_HEADER)
             .returning(|_| Some(EnvoyBuffer::new("s0-1234")))
             .once();
 
         envoy_filter
             .expect_set_request_header()
-            .withf(|name, value| name == "x-nu-hash" && value == b"0")
+            .withf(|name, value| name == HASH_HEADER && value == b"0")
             .return_const(true)
             .once();
 

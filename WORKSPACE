@@ -62,18 +62,9 @@ load("@envoy//bazel:dependency_imports_extra.bzl", "envoy_dependency_imports_ext
 
 envoy_dependency_imports_extra()
 
-load("@rules_rust//crate_universe:defs.bzl", "crate", "crates_repository")
+load("//bazel/rust:crates_repository.bzl", "crates_repository")
 
-crates_repository(
-    name = "crate_index",
-    cargo_lockfile = "//:Cargo.lock",
-    lockfile = "//:Cargo.Bazel.lock",
-    packages = {
-        "regex": crate.spec(
-            version = "1.11.1",
-        ),
-    },
-)
+crates_repository()
 
 load("@crate_index//:defs.bzl", "crate_repositories")
 
