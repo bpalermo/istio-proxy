@@ -8,10 +8,11 @@ rust_shared_library(
         "-C",
         "link-args=-Wl,-undefined,dynamic_lookup",
     ],
+    visibility = ["//:__pkg__"],
     deps = [
+        "@crate_index//:regex",
         "@envoy//source/extensions/dynamic_modules/sdk/rust:envoy_proxy_dynamic_modules_rust_sdk",
     ],
-    visibility = ["//:__pkg__"],
 )
 
 rust_test(
