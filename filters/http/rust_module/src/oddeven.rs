@@ -6,6 +6,8 @@ const ROUTING_REGEX_PATTERN: &str = r"\pL\d+-(\d+)";
 
 const ROUTING_HEADER: &str = "x-nu-routing";
 const HASH_HEADER: &str = "x-nu-hash";
+const HASH_HEADER_EVEN_VALUE: &str = "0";
+const HASH_HEADER_ODD_VALUE: &str = "1";
 
 pub struct FilterConfig {
     re: Arc<Regex>,
@@ -42,7 +44,7 @@ impl Filter {
         self.re.captures(partition_id)
             .and_then(|caps| caps.get(1))
             .and_then(|m| m.as_str().parse::<i64>().ok())
-            .map(|int| if int % 2 == 0 { "0" } else { "1" })
+            .map(|int| if int % 2 == 0 { HASH_HEADER_EVEN_VALUE } else { HASH_HEADER_ODD_VALUE })
     }
 }
 
@@ -56,9 +58,9 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for Filter {
             Some(val) => val,
             None => {
                 envoy_filter.send_response(
-                    403,
+                    404,
                     vec![],
-                    Some(b"Access forbidden: missing x-nu-routing header"),
+                    Some(b"Not found: missing routing header"),
                 );
                 return abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::StopIteration;
             }
@@ -98,13 +100,60 @@ mod tests {
     use super::*;
 
     #[test]
-    /// This demonstrates how to write a test without Envoy using a mock provided by the SDK.
+    fn test_filter_config_new() {
+        let config = FilterConfig::new("some_config");
+        // Verify the regex is properly initialized
+        assert!(config.re.is_match("s0-123"));
+        assert!(!config.re.is_match("invalid"));
+    }
+
+    #[test]
+    fn test_hash_method() {
+        let filter = Filter {
+            re: Arc::new(Regex::new(ROUTING_REGEX_PATTERN).unwrap()),
+        };
+
+        // Test even numbers
+        assert_eq!(filter.hash("s0-1234"), Some(HASH_HEADER_EVEN_VALUE));
+        assert_eq!(filter.hash("a1-0"), Some(HASH_HEADER_EVEN_VALUE));
+
+        // Test odd numbers
+        assert_eq!(filter.hash("s0-1235"), Some(HASH_HEADER_ODD_VALUE));
+        assert_eq!(filter.hash("z9-1"), Some(HASH_HEADER_ODD_VALUE));
+
+        // Test invalid formats
+        assert_eq!(filter.hash("invalid"), None);
+        assert_eq!(filter.hash("s0-"), None);
+        assert_eq!(filter.hash("s0-abc"), None);
+        assert_eq!(filter.hash(""), None);
+    }
+
+    #[test]
     fn test_filter() {
         let mut envoy_filter = envoy_proxy_dynamic_modules_rust_sdk::MockEnvoyHttpFilter::new();
         let mut filter = Filter {
             re: Arc::new(Regex::new(ROUTING_REGEX_PATTERN).unwrap()),
         };
 
+        // Test with zero
+        envoy_filter
+            .expect_get_request_header_value()
+            .withf(|name| name == ROUTING_HEADER)
+            .returning(|_| Some(EnvoyBuffer::new("s0-0")))
+            .once();
+
+        envoy_filter
+            .expect_set_request_header()
+            .withf(|name, value| name == HASH_HEADER && value == HASH_HEADER_EVEN_VALUE.as_bytes())
+            .return_const(true)
+            .once();
+
+        assert_eq!(
+            filter.on_request_headers(&mut envoy_filter, false),
+            abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::Continue
+        );
+
+        // Test with even partition ID
         envoy_filter
             .expect_get_request_header_value()
             .withf(|name| name == ROUTING_HEADER)
@@ -113,33 +162,98 @@ mod tests {
 
         envoy_filter
             .expect_set_request_header()
-            .withf(|name, value| name == HASH_HEADER && value == b"0")
+            .withf(|name, value| name == HASH_HEADER && value == HASH_HEADER_EVEN_VALUE.as_bytes())
             .return_const(true)
             .once();
+
+        envoy_filter.expect_send_response().never();
 
         assert_eq!(
             filter.on_request_headers(&mut envoy_filter, false),
             abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::Continue
         );
+
+        // Test with odd partition ID
+        envoy_filter
+            .expect_get_request_header_value()
+            .withf(|name| name == ROUTING_HEADER)
+            .returning(|_| Some(EnvoyBuffer::new("s0-1235")))
+            .once();
+
+        envoy_filter
+            .expect_set_request_header()
+            .withf(|name, value| name == HASH_HEADER && value == HASH_HEADER_ODD_VALUE.as_bytes())
+            .return_const(true)
+            .once();
+
+        envoy_filter.expect_send_response().never();
+
         assert_eq!(
-            filter.on_request_body(&mut envoy_filter, false),
-            abi::envoy_dynamic_module_type_on_http_filter_request_body_status::Continue
+            filter.on_request_headers(&mut envoy_filter, false),
+            abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::Continue
         );
+
+        // Test with empty partition ID
+        envoy_filter
+            .expect_get_request_header_value()
+            .withf(|name| name == ROUTING_HEADER)
+            .returning(|_| Some(EnvoyBuffer::new("")))
+            .once();
+
+        envoy_filter
+            .expect_send_response()
+            .withf(|status, _, body| {
+                *status == 400
+                    && *body == Some(b"Bad request: empty or invalid routing header")
+            })
+            .once()
+            .return_const(());
+
         assert_eq!(
-            filter.on_request_trailers(&mut envoy_filter),
-            abi::envoy_dynamic_module_type_on_http_filter_request_trailers_status::Continue
+            filter.on_request_headers(&mut envoy_filter, false),
+            abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::StopIteration
         );
+
+        // Test with invalid partition ID
+        envoy_filter
+            .expect_get_request_header_value()
+            .withf(|name| name == ROUTING_HEADER)
+            .returning(|_| Some(EnvoyBuffer::new("s1")))
+            .once();
+
+        envoy_filter
+            .expect_send_response()
+            .withf(|status, _, body| {
+                *status == 400
+                    && *body == Some(b"Bad request: invalid routing header format")
+            })
+            .once()
+            .return_const(());
+
         assert_eq!(
-            filter.on_response_headers(&mut envoy_filter, false),
-            abi::envoy_dynamic_module_type_on_http_filter_response_headers_status::Continue
+            filter.on_request_headers(&mut envoy_filter, false),
+            abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::StopIteration
         );
+
+        // Test with missing routing header
+        envoy_filter
+            .expect_get_request_header_value()
+            .withf(|name| name == ROUTING_HEADER)
+            .returning(|_| None)
+            .once();
+
+        envoy_filter
+            .expect_send_response()
+            .withf(|status, _, body| {
+                *status == 404
+                    && *body == Some(b"Not found: missing routing header")
+            })
+            .once()
+            .return_const(());
+
         assert_eq!(
-            filter.on_response_body(&mut envoy_filter, false),
-            abi::envoy_dynamic_module_type_on_http_filter_response_body_status::Continue
-        );
-        assert_eq!(
-            filter.on_response_trailers(&mut envoy_filter),
-            abi::envoy_dynamic_module_type_on_http_filter_response_trailers_status::Continue
+            filter.on_request_headers(&mut envoy_filter, false),
+            abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::StopIteration
         );
     }
 }
