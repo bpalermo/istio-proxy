@@ -1,14 +1,32 @@
 schemaVersion: '2.0.0'
 metadataTest:
-  entrypoint: ["/usr/local/bin/envoy"]
+  entrypoint: ["/usr/local/bin/pilot-agent"]
   user: 65532
   envVars:
     - key: ENVOY_DYNAMIC_MODULES_SEARCH_PATH
       value: /usr/local/lib
 fileExistenceTests:
+  - name: 'envoy'
+    path: '/usr/local/bin/envoy'
+    shouldExist: true
+    permissions: '-rwxr-xr-x'
+    uid: 65532
+    gid: 65532
+  - name: 'pilot_agent'
+    path: '/usr/local/bin/pilot-agent'
+    shouldExist: true
+    permissions: '-rwxr-xr-x'
+    uid: 65532
+    gid: 65532
   - name: 'rust_module'
     path: '/usr/local/lib/librust_module.so'
     shouldExist: true
     permissions: '-rwxr-xr-x'
+    uid: 65532
+    gid: 65532
+  - name: 'envoy_bootstrap'
+    path: '/usr/lib/istio/envoy/envoy_bootstrap_tmpl.json'
+    shouldExist: true
+    permissions: '-r--r--r--'
     uid: 65532
     gid: 65532

@@ -1,6 +1,6 @@
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
-load("//bazel:envoy_repository.bzl", "envoy_repository")
-load("//bazel:istio_repository.bzl", "istio_repository")
+load("//bazel/envoy:repository.bzl", "envoy_repository")
+load("//bazel/istio:repository.bzl", "istio_repository")
 
 def repositories():
     http_archive(

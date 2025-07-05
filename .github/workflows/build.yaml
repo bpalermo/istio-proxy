@@ -10,6 +10,44 @@ env:
   CARGO_BAZEL_REPIN: true
 
 jobs:
+  istio:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-22.04, ubuntu-22.04-arm]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          repository: istio/istio
+          ref: 2ce3ad897b984a045d9d5f80a8c1bb8eefdf88f5
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Build Istio
+        env:
+          BUILD_WITH_CONTAINER: '0'
+        run: |
+          make build-linux
+      - name: Set architecture
+        run: |
+          if [ "${{ runner.arch }}" = "X64" ]; then
+            echo "ARCH=amd64" >> $GITHUB_ENV
+          elif [ "${{ runner.arch }}" = "ARM64" ]; then
+            echo "ARCH=arm64" >> $GITHUB_ENV
+          fi
+      - name: Prepare and upload istio files
+        run: |
+          mkdir -p istio-files
+          cp out/linux_${{ env.ARCH }}/pilot-agent istio-files/
+          cp tools/packaging/common/envoy_bootstrap.json istio-files/
+      - name: Upload istio files
+        uses: actions/upload-artifact@v4
+        with:
+          name: istio-${{ env.ARCH }}
+          path: istio-files/*
+          if-no-files-found: error
+          retention-days: 1
   build:
     runs-on: ${{ matrix.os }}
     strategy:
@@ -28,13 +66,25 @@ jobs:
           remove-dotnet: 'true'
           remove-haskell: 'true'
           remove-codeql: 'true'
-      - name: Checkout
-        uses: actions/checkout@v4
       - name: APT packages
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libtinfo5
           sudo rm -rf /var/lib/apt/lists/*
+      - name: Set architecture
+        run: |
+          if [ "${{ runner.arch }}" = "X64" ]; then
+            echo "ARCH=amd64" >> $GITHUB_ENV
+          elif [ "${{ runner.arch }}" = "ARM64" ]; then
+            echo "ARCH=arm64" >> $GITHUB_ENV
+          fi
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          name: istio-${{ env.ARCH }}
+          path: ./
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
       - name: Login to Docker Hub
@@ -51,7 +101,8 @@ jobs:
         run: |
           bazel/setup_clang.sh "${{ env.LLVM_PATH }}"
           echo "build --config=clang" >> user.bazelrc
-      - uses: bazel-contrib/setup-bazel@0.15.0
+      - name: Setup Bazel
+        uses: bazel-contrib/setup-bazel@0.15.0
         with:
           bazelisk-cache: true
           disk-cache: ${{ github.workflow }}

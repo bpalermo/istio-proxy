@@ -30,6 +30,12 @@ static_resources:
                       dynamic_module_config:
                         name: rust_module
                       filter_name: passthrough
+                  - name: dynamic_modules/passthrough
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_modules.v3.DynamicModuleFilter
+                      dynamic_module_config:
+                        name: rust_module
+                      filter_name: oddeven
                   - name: envoy.filters.http.router
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
