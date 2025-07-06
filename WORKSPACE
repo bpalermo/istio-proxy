@@ -14,7 +14,7 @@
 #
 ################################################################################
 #
-workspace(name = "io_istio_proxy")
+workspace(name = "github_com_bpalermo_istio_proxy")
 
 load("//bazel:repositories.bzl", "repositories")
 
@@ -62,6 +62,7 @@ load("@envoy//bazel:dependency_imports_extra.bzl", "envoy_dependency_imports_ext
 
 envoy_dependency_imports_extra()
 
+# Rust
 load("//bazel/rust:crates_repository.bzl", "crates_repository")
 
 crates_repository()

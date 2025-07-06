@@ -1,0 +1,5 @@
+#alias(
+#    name = "pilot-agent",
+#    actual = "@istio//:istio_agent_binary",
+#    visibility = ["//:__pkg__"],
+#)

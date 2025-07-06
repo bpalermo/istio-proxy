@@ -30,11 +30,11 @@ config_setting(
 )
 
 ISTIO_EXTENSIONS = [
-    "@istio//source/extensions/common/workload_discovery:api_lib",  # Experimental: WIP
-    "@istio//source/extensions/filters/http/alpn:config_lib",
-    "@istio//source/extensions/filters/http/istio_stats",
-    "@istio//source/extensions/filters/http/peer_metadata:filter_lib",
-    "@istio//source/extensions/filters/network/metadata_exchange:config_lib",
+    "@istio_proxy//source/extensions/common/workload_discovery:api_lib",  # Experimental: WIP
+    "@istio_proxy//source/extensions/filters/http/alpn:config_lib",
+    "@istio_proxy//source/extensions/filters/http/istio_stats",
+    "@istio_proxy//source/extensions/filters/http/peer_metadata:filter_lib",
+    "@istio_proxy//source/extensions/filters/network/metadata_exchange:config_lib",
 ]
 
 envoy_cc_binary(
@@ -55,6 +55,22 @@ pkg_tar(
     tags = ["manual"],
 )
 
+# will be downloaded during the CI build
+exports_files([
+    "pilot-agent",
+    "envoy_bootstrap.json"
+])
+
+pkg_tar(
+    name = "pilot_agent_tar",
+    srcs = ["//:pilot-agent"],
+    extension = "tar.gz",
+    mode = "0755",
+    owner = "65532.65532",
+    package_dir = "/usr/local/bin/",
+    tags = ["manual"],
+)
+
 pkg_tar(
     name = "rust_module_tar",
     srcs = ["//filters/http/rust_module"],
@@ -65,15 +81,32 @@ pkg_tar(
     visibility = ["//visibility:public"],
 )
 
+pkg_tar(
+    name = "envoy_bootstrap_template_tar",
+    extension = "tar.gz",
+    files = {
+        "//:envoy_bootstrap.json": "/usr/lib/istio/envoy/envoy_bootstrap_tmpl.json",
+    },
+    modes = {
+        "/usr/lib/istio/envoy/envoy_bootstrap_tmpl.json": "0444",
+    },
+    owners = {
+        "/usr/lib/istio/envoy/envoy_bootstrap_tmpl.json": "65532.65532",
+    },
+    visibility = ["//visibility:public"],
+)
+
 oci_image(
     name = "image",
     base = "@distroless_cc_debian12_nonroot",
-    entrypoint = ["/usr/local/bin/envoy"],
+    entrypoint = ["/usr/local/bin/pilot-agent"],
     env = {
         "ENVOY_DYNAMIC_MODULES_SEARCH_PATH": "/usr/local/lib",
     },
     tars = [
         ":envoy_tar",
+        ":pilot_agent_tar",
+        ":envoy_bootstrap_template_tar",
         ":rust_module_tar",
     ],
 )
