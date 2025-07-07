@@ -1,6 +1,8 @@
 load("@container_structure_test//:defs.bzl", "container_structure_test")
 load("@envoy//bazel:envoy_build_system.bzl", "envoy_cc_binary")
 load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
+load("@rules_pkg//:pkg.bzl", "pkg_tar")
+load("//bazel/istio:repository.bzl", "ISTIO_PROXY_SHA")
 
 # Copyright 2016 Istio Authors. All Rights Reserved.
 #
@@ -18,7 +20,6 @@ load("@rules_oci//oci:defs.bzl", "oci_image", "oci_load", "oci_push")
 #
 ################################################################################
 #
-load("@rules_pkg//:pkg.bzl", "pkg_tar")
 
 exports_files(["LICENSE"])
 
@@ -102,6 +103,7 @@ oci_image(
     entrypoint = ["/usr/local/bin/pilot-agent"],
     env = {
         "ENVOY_DYNAMIC_MODULES_SEARCH_PATH": "/usr/local/lib",
+        "ISTIO_META_ISTIO_PROXY_SHA": ISTIO_PROXY_SHA,
     },
     tars = [
         ":envoy_tar",
@@ -109,6 +111,7 @@ oci_image(
         ":envoy_bootstrap_template_tar",
         ":rust_module_tar",
     ],
+    workdir = "/",
 )
 
 oci_push(
