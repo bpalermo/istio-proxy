@@ -85,13 +85,13 @@ pkg_tar(
     name = "envoy_bootstrap_template_tar",
     extension = "tar.gz",
     files = {
-        "//:envoy_bootstrap.json": "/usr/lib/istio/envoy/envoy_bootstrap_tmpl.json",
+        "//:envoy_bootstrap.json": "/var/lib/istio/envoy/envoy_bootstrap_tmpl.json",
     },
     modes = {
-        "/usr/lib/istio/envoy/envoy_bootstrap_tmpl.json": "0644",
+        "/var/lib/istio/envoy/envoy_bootstrap_tmpl.json": "0644",
     },
     owners = {
-        "/usr/lib/istio/envoy/envoy_bootstrap_tmpl.json": "0.0",
+        "/var/lib/istio/envoy/envoy_bootstrap_tmpl.json": "0.0",
     },
     visibility = ["//visibility:public"],
 )
