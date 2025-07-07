@@ -25,7 +25,7 @@ fileExistenceTests:
     uid: 0
     gid: 0
   - name: 'envoy_bootstrap'
-    path: '/usr/lib/istio/envoy/envoy_bootstrap_tmpl.json'
+    path: '/var/lib/istio/envoy/envoy_bootstrap_tmpl.json'
     shouldExist: true
     permissions: '-rw-r--r--'
     uid: 0
