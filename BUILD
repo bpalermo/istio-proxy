@@ -50,7 +50,7 @@ pkg_tar(
     srcs = [":envoy"],
     extension = "tar.gz",
     mode = "0755",
-    owner = "65532.65532",
+    owner = "0.0",
     package_dir = "/usr/local/bin/",
     tags = ["manual"],
 )
@@ -66,7 +66,7 @@ pkg_tar(
     srcs = ["//:pilot-agent"],
     extension = "tar.gz",
     mode = "0755",
-    owner = "65532.65532",
+    owner = "0.0",
     package_dir = "/usr/local/bin/",
     tags = ["manual"],
 )
@@ -76,7 +76,7 @@ pkg_tar(
     srcs = ["//filters/http/rust_module"],
     extension = "tar.gz",
     mode = "0755",
-    owner = "65532.65532",
+    owner = "0.0",
     package_dir = "/usr/local/lib/",
     visibility = ["//visibility:public"],
 )
@@ -88,10 +88,10 @@ pkg_tar(
         "//:envoy_bootstrap.json": "/usr/lib/istio/envoy/envoy_bootstrap_tmpl.json",
     },
     modes = {
-        "/usr/lib/istio/envoy/envoy_bootstrap_tmpl.json": "0444",
+        "/usr/lib/istio/envoy/envoy_bootstrap_tmpl.json": "0644",
     },
     owners = {
-        "/usr/lib/istio/envoy/envoy_bootstrap_tmpl.json": "65532.65532",
+        "/usr/lib/istio/envoy/envoy_bootstrap_tmpl.json": "0.0",
     },
     visibility = ["//visibility:public"],
 )
