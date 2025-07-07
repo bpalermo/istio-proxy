@@ -58,7 +58,7 @@ pkg_tar(
 # will be downloaded during the CI build
 exports_files([
     "pilot-agent",
-    "envoy_bootstrap.json"
+    "envoy_bootstrap.json",
 ])
 
 pkg_tar(
@@ -98,7 +98,7 @@ pkg_tar(
 
 oci_image(
     name = "image",
-    base = "@distroless_cc_debian12_nonroot",
+    base = "@istio_release_iptables",
     entrypoint = ["/usr/local/bin/pilot-agent"],
     env = {
         "ENVOY_DYNAMIC_MODULES_SEARCH_PATH": "/usr/local/lib",
