@@ -1,10 +1,13 @@
 schemaVersion: '2.0.0'
 metadataTest:
   entrypoint: ["/usr/local/bin/pilot-agent"]
+  workdir: "/"
   user: 65532
   envVars:
     - key: ENVOY_DYNAMIC_MODULES_SEARCH_PATH
       value: /usr/local/lib
+    - key: ISTIO_META_ISTIO_PROXY_SHA
+      value: 19d31b12e62848c5e9f3f786c6c9a650ebc00b64
 fileExistenceTests:
   - name: 'envoy'
     path: '/usr/local/bin/envoy'
