@@ -91,6 +91,7 @@ impl<EHF: EnvoyHttpFilter> HttpFilter<EHF> for Filter {
         };
 
         envoy_filter.set_request_header(HASH_HEADER, hash.as_bytes());
+        envoy_filter.clear_route_cache();
         abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::Continue
     }
 }
@@ -148,6 +149,11 @@ mod tests {
             .return_const(true)
             .once();
 
+        envoy_filter
+            .expect_clear_route_cache()
+            .return_const(())
+            .once();
+
         assert_eq!(
             filter.on_request_headers(&mut envoy_filter, false),
             abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::Continue
@@ -164,6 +170,11 @@ mod tests {
             .expect_set_request_header()
             .withf(|name, value| name == HASH_HEADER && value == HASH_HEADER_EVEN_VALUE.as_bytes())
             .return_const(true)
+            .once();
+
+        envoy_filter
+            .expect_clear_route_cache()
+            .return_const(())
             .once();
 
         envoy_filter.expect_send_response().never();
@@ -186,7 +197,14 @@ mod tests {
             .return_const(true)
             .once();
 
-        envoy_filter.expect_send_response().never();
+        envoy_filter
+            .expect_clear_route_cache()
+            .return_const(())
+            .once();
+
+        envoy_filter
+            .expect_send_response()
+            .never();
 
         assert_eq!(
             filter.on_request_headers(&mut envoy_filter, false),
@@ -209,6 +227,11 @@ mod tests {
             .once()
             .return_const(());
 
+        envoy_filter
+            .expect_clear_route_cache()
+            .return_const(())
+            .never();
+
         assert_eq!(
             filter.on_request_headers(&mut envoy_filter, false),
             abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::StopIteration
@@ -230,6 +253,11 @@ mod tests {
             .once()
             .return_const(());
 
+        envoy_filter
+            .expect_clear_route_cache()
+            .return_const(())
+            .never();
+
         assert_eq!(
             filter.on_request_headers(&mut envoy_filter, false),
             abi::envoy_dynamic_module_type_on_http_filter_request_headers_status::StopIteration
@@ -250,6 +278,11 @@ mod tests {
             })
             .once()
             .return_const(());
+
+        envoy_filter
+            .expect_clear_route_cache()
+            .return_const(())
+            .never();
 
         assert_eq!(
             filter.on_request_headers(&mut envoy_filter, false),
