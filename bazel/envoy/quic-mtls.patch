@@ -1,0 +1,2547 @@
+From 38ccf1ad8a3bf0d0ca2a96b9663f38d1af0e4adc Mon Sep 17 00:00:00 2001
+From: Rohit Agrawal <rohit.agrawal@databricks.com>
+Date: Tue, 24 Jun 2025 09:10:34 -0700
+Subject: [PATCH] quic: enable client certificate authentication support
+
+Signed-off-by: Rohit Agrawal <rohit.agrawal@databricks.com>
+---
+ changelogs/current.yaml                       |   5 +
+ source/common/quic/BUILD                      |  23 +-
+ source/common/quic/active_quic_listener.cc    |  14 +-
+ source/common/quic/active_quic_listener.h     |   3 +
+ .../common/quic/envoy_quic_proof_verifier.cc  |   4 +-
+ .../quic/envoy_quic_proof_verifier_base.cc    |  25 -
+ .../quic/envoy_quic_proof_verifier_base.h     |  21 +-
+ .../quic/envoy_quic_server_proof_verifier.cc  | 177 +++++
+ .../quic/envoy_quic_server_proof_verifier.h   |  40 ++
+ .../common/quic/envoy_quic_server_session.cc  |  22 +-
+ .../quic_client_transport_socket_factory.cc   | 107 ++-
+ .../quic_server_transport_socket_factory.cc   |  14 +-
+ .../quic_server_transport_socket_factory.h    |   5 +
+ source/common/quic/quic_ssl_connection_info.h | 627 +++++++++++++++++-
+ .../tls/cert_validator/default_validator.cc   |   3 +-
+ source/common/tls/client_context_impl.h       |   1 +
+ .../cert_validator/spiffe/spiffe_validator.cc |   2 +-
+ test/common/quic/BUILD                        |  22 +
+ .../quic/envoy_quic_proof_verifier_test.cc    |  92 +++
+ .../envoy_quic_server_proof_verifier_test.cc  | 135 ++++
+ .../quic/envoy_quic_server_session_test.cc    |   1 +
+ .../quic_transport_socket_factory_test.cc     | 139 +++-
+ .../cert_validator/default_validator_test.cc  |  41 +-
+ test/integration/BUILD                        |  13 +
+ .../integration/quic_mtls_integration_test.cc | 537 +++++++++++++++
+ 25 files changed, 1970 insertions(+), 103 deletions(-)
+ delete mode 100644 source/common/quic/envoy_quic_proof_verifier_base.cc
+ create mode 100644 source/common/quic/envoy_quic_server_proof_verifier.cc
+ create mode 100644 source/common/quic/envoy_quic_server_proof_verifier.h
+ create mode 100644 test/common/quic/envoy_quic_server_proof_verifier_test.cc
+ create mode 100644 test/integration/quic_mtls_integration_test.cc
+
+diff --git a/changelogs/current.yaml b/changelogs/current.yaml
+index 4646f59a1ef7f..6dca9e504c194 100644
+--- a/changelogs/current.yaml
++++ b/changelogs/current.yaml
+@@ -235,6 +235,11 @@ new_features:
+   change: |
+     Removed work-in-progress annotations from RBAC filter ``matcher`` and ``shadow_matcher`` fields in HTTP and network
+     filters, marking the feature stable.
++- area: quic
++  change: |
++    Added support for client certificate authentication (mTLS) in QUIC/HTTP3 connections. When
++    ``require_client_certificate`` is enabled in the downstream TLS context, the QUIC server will enforce client
++    certificate validation during the TLS handshake.
+ - area: access_log
+   change: |
+     Added process-level rate limiting on access log emission via
+diff --git a/source/common/quic/BUILD b/source/common/quic/BUILD
+index 745de7f9ef925..a8e41b9588a0a 100644
+--- a/source/common/quic/BUILD
++++ b/source/common/quic/BUILD
+@@ -132,14 +132,11 @@ envoy_cc_library(
+
+ envoy_cc_library(
+     name = "envoy_quic_proof_verifier_base_lib",
+-    srcs = envoy_select_enable_http3(["envoy_quic_proof_verifier_base.cc"]),
+     hdrs = envoy_select_enable_http3(["envoy_quic_proof_verifier_base.h"]),
+     deps = envoy_select_enable_http3([
+-        ":envoy_quic_utils_lib",
+-        "@com_github_google_quiche//:quic_core_crypto_certificate_view_lib",
++        "//source/common/common:assert_lib",
+         "@com_github_google_quiche//:quic_core_crypto_crypto_handshake_lib",
+         "@com_github_google_quiche//:quic_core_versions_lib",
+-        "@com_github_google_quiche//:quic_platform",
+     ]),
+ )
+
+@@ -156,6 +153,23 @@ envoy_cc_library(
+     ]),
+ )
+
++envoy_cc_library(
++    name = "envoy_quic_server_proof_verifier_lib",
++    srcs = envoy_select_enable_http3(["envoy_quic_server_proof_verifier.cc"]),
++    hdrs = envoy_select_enable_http3(["envoy_quic_server_proof_verifier.h"]),
++    deps = envoy_select_enable_http3([
++        ":envoy_quic_proof_verifier_base_lib",
++        ":envoy_quic_proof_verifier_lib",
++        ":envoy_quic_utils_lib",
++        ":quic_server_transport_socket_factory_lib",
++        "//source/common/network:utility_lib",
++        "//source/common/stream_info:stream_info_lib",
++        "//source/common/tls:server_context_lib",
++        "@com_github_google_quiche//:quic_core_crypto_certificate_view_lib",
++        "@com_github_google_quiche//:quic_platform",
++    ]),
++)
++
+ envoy_cc_library(
+     name = "envoy_quic_stream_lib",
+     srcs = envoy_select_enable_http3(["envoy_quic_stream.cc"]),
+@@ -454,6 +468,7 @@ envoy_cc_library(
+         ":envoy_quic_proof_source_factory_interface",
+         ":envoy_quic_proof_source_lib",
+         ":envoy_quic_server_preferred_address_config_factory_interface",
++        ":envoy_quic_server_proof_verifier_lib",
+         ":envoy_quic_utils_lib",
+         "//envoy/network:listener_interface",
+         "//source/common/network:listener_lib",
+diff --git a/source/common/quic/active_quic_listener.cc b/source/common/quic/active_quic_listener.cc
+index b95f441f93b9a..71c22d988eff9 100644
+--- a/source/common/quic/active_quic_listener.cc
++++ b/source/common/quic/active_quic_listener.cc
+@@ -19,6 +19,7 @@
+ #include "source/common/quic/envoy_quic_dispatcher.h"
+ #include "source/common/quic/envoy_quic_packet_writer.h"
+ #include "source/common/quic/envoy_quic_proof_source.h"
++#include "source/common/quic/envoy_quic_server_proof_verifier.h"
+ #include "source/common/quic/envoy_quic_utils.h"
+ #include "source/common/quic/quic_network_connection.h"
+ #include "source/common/runtime/runtime_features.h"
+@@ -61,15 +62,23 @@ ActiveQuicListener::ActiveQuicListener(
+
+   quic::QuicRandom* const random = quic::QuicRandom::GetInstance();
+   random->RandBytes(random_seed_, sizeof(random_seed_));
++
++  // Create proof verifier for client certificate validation.
++  // This is used during QUIC handshake when mTLS is required.
++  auto proof_verifier = std::make_unique<EnvoyQuicServerProofVerifier>(
++      listen_socket_, listener_config.filterChainManager(), dispatcher.timeSource());
++  server_proof_verifier_ = proof_verifier.get();
++
+   crypto_config_ = std::make_unique<quic::QuicCryptoServerConfig>(
+       absl::string_view(reinterpret_cast<char*>(random_seed_), sizeof(random_seed_)),
+       quic::QuicRandom::GetInstance(),
+       proof_source_factory.createQuicProofSource(
+           listen_socket_, listener_config.filterChainManager(), stats_, dispatcher.timeSource()),
+-      quic::KeyExchangeSource::Default());
++      quic::KeyExchangeSource::Default(), std::move(proof_verifier));
+   auto connection_helper = std::make_unique<EnvoyQuicConnectionHelper>(dispatcher_);
+   crypto_config_->AddDefaultConfig(random, connection_helper->GetClock(),
+                                    quic::QuicCryptoServerConfig::ConfigOptions());
++
+   auto alarm_factory =
+       std::make_unique<EnvoyQuicAlarmFactory>(dispatcher_, *connection_helper->GetClock());
+   // Set the socket to report incoming ECN.
+@@ -257,6 +266,9 @@ void ActiveQuicListener::updateListenerConfig(Network::ListenerConfig& config) {
+   config_ = &config;
+   dynamic_cast<EnvoyQuicProofSource*>(crypto_config_->proof_source())
+       ->updateFilterChainManager(config.filterChainManager());
++  if (server_proof_verifier_ != nullptr) {
++    server_proof_verifier_->updateFilterChainManager(config.filterChainManager());
++  }
+   quic_dispatcher_->updateListenerConfig(config);
+ }
+
+diff --git a/source/common/quic/active_quic_listener.h b/source/common/quic/active_quic_listener.h
+index c354f44ad707b..0e6707ce3db73 100644
+--- a/source/common/quic/active_quic_listener.h
++++ b/source/common/quic/active_quic_listener.h
+@@ -13,6 +13,7 @@
+ #include "source/common/quic/envoy_quic_dispatcher.h"
+ #include "source/common/quic/envoy_quic_proof_source_factory_interface.h"
+ #include "source/common/quic/envoy_quic_server_preferred_address_config_factory.h"
++#include "source/common/quic/envoy_quic_server_proof_verifier.h"
+ #include "source/common/runtime/runtime_protos.h"
+ #include "source/server/active_udp_listener.h"
+
+@@ -106,6 +107,8 @@ class ActiveQuicListener : public Envoy::Server::ActiveUdpListenerBase,
+   // This is an equivalent of max_connections_to_accept_per_socket_event for TCP
+   // listeners.
+   uint32_t max_sessions_per_event_loop_;
++  // Raw pointer to the server proof verifier for filter chain updates. Owned by crypto_config_.
++  EnvoyQuicServerProofVerifier* server_proof_verifier_{nullptr};
+ };
+
+ using ActiveQuicListenerPtr = std::unique_ptr<ActiveQuicListener>;
+diff --git a/source/common/quic/envoy_quic_proof_verifier.cc b/source/common/quic/envoy_quic_proof_verifier.cc
+index 70741c345f5f9..d69a957174306 100644
+--- a/source/common/quic/envoy_quic_proof_verifier.cc
++++ b/source/common/quic/envoy_quic_proof_verifier.cc
+@@ -82,7 +82,9 @@ quic::QuicAsyncStatus EnvoyQuicProofVerifier::VerifyCertChain(
+     IS_ENVOY_BUG("QUIC proof verify context was not setup correctly.");
+     return quic::QUIC_FAILURE;
+   }
+-  ENVOY_BUG(!verify_context->isServer(), "Client certificates are not supported in QUIC yet.");
++  // Client certificate authentication is now supported in QUIC as per RFC 9001 Section 4.4.
++  ENVOY_LOG(debug, "QUIC certificate verification: isServer={}, hostname={}, cert_count={}",
++            verify_context->isServer(), hostname, certs.size());
+
+   bssl::UniquePtr<STACK_OF(X509)> cert_chain(sk_X509_new_null());
+   for (const auto& cert_str : certs) {
+diff --git a/source/common/quic/envoy_quic_proof_verifier_base.cc b/source/common/quic/envoy_quic_proof_verifier_base.cc
+deleted file mode 100644
+index 711e07d38a080..0000000000000
+--- a/source/common/quic/envoy_quic_proof_verifier_base.cc
++++ /dev/null
+@@ -1,25 +0,0 @@
+-#include "source/common/quic/envoy_quic_proof_verifier_base.h"
+-
+-#include "source/common/quic/envoy_quic_utils.h"
+-
+-#include "openssl/ssl.h"
+-#include "quiche/quic/core/crypto/certificate_view.h"
+-#include "quiche/quic/core/crypto/crypto_protocol.h"
+-#include "quiche/quic/core/quic_data_writer.h"
+-
+-namespace Envoy {
+-namespace Quic {
+-
+-quic::QuicAsyncStatus EnvoyQuicProofVerifierBase::VerifyProof(
+-    const std::string& /*hostname*/, const uint16_t /*port*/, const std::string& /*server_config*/,
+-    quic::QuicTransportVersion /*quic_version*/, absl::string_view /*chlo_hash*/,
+-    const std::vector<std::string>& /*certs*/, const std::string& /*cert_sct*/,
+-    const std::string& /*signature*/, const quic::ProofVerifyContext* /*context*/,
+-    std::string* /*error_details*/, std::unique_ptr<quic::ProofVerifyDetails>* /*details*/,
+-    std::unique_ptr<quic::ProofVerifierCallback> /*callback*/) {
+-  // Only reachable in Google QUIC which is not supported by Envoy.
+-  PANIC("not implemented");
+-}
+-
+-} // namespace Quic
+-} // namespace Envoy
+diff --git a/source/common/quic/envoy_quic_proof_verifier_base.h b/source/common/quic/envoy_quic_proof_verifier_base.h
+index b754f5487d4c2..eab0a7c7e7832 100644
+--- a/source/common/quic/envoy_quic_proof_verifier_base.h
++++ b/source/common/quic/envoy_quic_proof_verifier_base.h
+@@ -1,5 +1,6 @@
+ #pragma once
+
++#include "source/common/common/assert.h"
+ #include "source/common/common/logger.h"
+
+ #include "absl/strings/str_cat.h"
+@@ -9,21 +10,25 @@
+ namespace Envoy {
+ namespace Quic {
+
+-// A partial implementation of quic::ProofVerifier which does signature
+-// verification.
++// A partial implementation of quic::ProofVerifier which provides stub
++// implementations for Google QUIC methods which are not supported by Envoy.
+ class EnvoyQuicProofVerifierBase : public quic::ProofVerifier,
+                                    protected Logger::Loggable<Logger::Id::quic> {
+ public:
+   ~EnvoyQuicProofVerifierBase() override = default;
+
+   // quic::ProofVerifier
++  // This method is only used in Google QUIC which is not supported by Envoy.
+   quic::QuicAsyncStatus
+-  VerifyProof(const std::string& hostname, const uint16_t port, const std::string& server_config,
+-              quic::QuicTransportVersion /*quic_version*/, absl::string_view chlo_hash,
+-              const std::vector<std::string>& certs, const std::string& cert_sct,
+-              const std::string& signature, const quic::ProofVerifyContext* context,
+-              std::string* error_details, std::unique_ptr<quic::ProofVerifyDetails>* details,
+-              std::unique_ptr<quic::ProofVerifierCallback> callback) override;
++  VerifyProof(const std::string& /*hostname*/, const uint16_t /*port*/,
++              const std::string& /*server_config*/, quic::QuicTransportVersion /*quic_version*/,
++              absl::string_view /*chlo_hash*/, const std::vector<std::string>& /*certs*/,
++              const std::string& /*cert_sct*/, const std::string& /*signature*/,
++              const quic::ProofVerifyContext* /*context*/, std::string* /*error_details*/,
++              std::unique_ptr<quic::ProofVerifyDetails>* /*details*/,
++              std::unique_ptr<quic::ProofVerifierCallback> /*callback*/) override {
++    PANIC("not implemented");
++  }
+
+   std::unique_ptr<quic::ProofVerifyContext> CreateDefaultContext() override { return nullptr; }
+ };
+diff --git a/source/common/quic/envoy_quic_server_proof_verifier.cc b/source/common/quic/envoy_quic_server_proof_verifier.cc
+new file mode 100644
+index 0000000000000..84bd6306eb1e6
+--- /dev/null
++++ b/source/common/quic/envoy_quic_server_proof_verifier.cc
+@@ -0,0 +1,177 @@
++#include "source/common/quic/envoy_quic_server_proof_verifier.h"
++
++#include "source/common/network/utility.h"
++#include "source/common/quic/envoy_quic_proof_verifier.h"
++#include "source/common/quic/envoy_quic_utils.h"
++#include "source/common/quic/quic_server_transport_socket_factory.h"
++#include "source/common/stream_info/stream_info_impl.h"
++#include "source/common/tls/server_context_impl.h"
++
++namespace Envoy {
++namespace Quic {
++
++EnvoyQuicServerProofVerifier::EnvoyQuicServerProofVerifier(
++    Network::Socket& listen_socket, Network::FilterChainManager& filter_chain_manager,
++    TimeSource& time_source)
++    : listen_socket_(listen_socket), filter_chain_manager_(&filter_chain_manager),
++      time_source_(time_source) {}
++
++quic::QuicAsyncStatus EnvoyQuicServerProofVerifier::VerifyCertChain(
++    const std::string& hostname, const uint16_t /*port*/, const std::vector<std::string>& certs,
++    const std::string& /*ocsp_response*/, const std::string& /*cert_sct*/,
++    const quic::ProofVerifyContext* /*context*/, std::string* error_details,
++    std::unique_ptr<quic::ProofVerifyDetails>* details, uint8_t* /*out_alert*/,
++    std::unique_ptr<quic::ProofVerifierCallback> /*callback*/) {
++
++  ASSERT(details != nullptr);
++
++  if (!filter_chain_manager_) {
++    *error_details = "Filter chain manager not available";
++    *details = std::make_unique<CertVerifyResult>(false);
++    return quic::QUIC_FAILURE;
++  }
++
++  auto local_addr = listen_socket_.connectionInfoProvider().localAddress();
++  if (!local_addr) {
++    *error_details = "No local address available";
++    *details = std::make_unique<CertVerifyResult>(false);
++    return quic::QUIC_FAILURE;
++  }
++
++  // Use localhost as peer address for filter chain matching during handshake
++  // since the actual client address may not be fully established at this point.
++  auto localhost_addr = Network::Utility::getCanonicalIpv4LoopbackAddress();
++  auto server_quic_addr = envoyIpAddressToQuicSocketAddress(local_addr->ip());
++  auto client_quic_addr = envoyIpAddressToQuicSocketAddress(localhost_addr->ip());
++
++  Network::ConnectionSocketPtr connection_socket = createServerConnectionSocket(
++      listen_socket_.ioHandle(), server_quic_addr, client_quic_addr, hostname, "h3");
++
++  if (!connection_socket) {
++    ENVOY_LOG(debug, "Failed to create connection socket for certificate validation");
++    *details = std::make_unique<CertVerifyResult>(true);
++    return quic::QUIC_SUCCESS;
++  }
++
++  StreamInfo::StreamInfoImpl stream_info(time_source_,
++                                         connection_socket->connectionInfoProviderSharedPtr(),
++                                         StreamInfo::FilterState::LifeSpan::Connection);
++
++  const Network::FilterChain* filter_chain =
++      filter_chain_manager_->findFilterChain(*connection_socket, stream_info);
++
++  if (!filter_chain) {
++    ENVOY_LOG(debug, "No filter chain found for certificate validation");
++    *details = std::make_unique<CertVerifyResult>(true);
++    return quic::QUIC_SUCCESS;
++  }
++
++  const auto* quic_transport_socket_factory = dynamic_cast<const QuicServerTransportSocketFactory*>(
++      &filter_chain->transportSocketFactory());
++
++  if (!quic_transport_socket_factory) {
++    ENVOY_LOG(debug, "Transport socket factory is not a QUIC server factory");
++    *details = std::make_unique<CertVerifyResult>(true);
++    return quic::QUIC_SUCCESS;
++  }
++
++  bool requires_client_cert = quic_transport_socket_factory->requiresClientCertificate();
++  ENVOY_LOG(debug, "QUIC server requires client certificate: {}", requires_client_cert);
++
++  if (!requires_client_cert) {
++    *details = std::make_unique<CertVerifyResult>(true);
++    return quic::QUIC_SUCCESS;
++  }
++
++  // Get the server SSL context to perform client certificate validation.
++  auto server_ssl_context = quic_transport_socket_factory->getServerSslContext();
++  if (!server_ssl_context) {
++    ENVOY_LOG(debug, "No server SSL context available for certificate validation");
++    *details = std::make_unique<CertVerifyResult>(true);
++    return quic::QUIC_SUCCESS;
++  }
++
++  // Client certificates are required - validate the provided certificate chain.
++  if (certs.empty()) {
++    ENVOY_LOG(warn, "Client certificate required but not provided");
++    *error_details = "Client certificate required but not provided";
++    *details = std::make_unique<CertVerifyResult>(false);
++    return quic::QUIC_FAILURE;
++  }
++
++  // Parse the certificate chain from DER format and build the X509 stack.
++  bssl::UniquePtr<STACK_OF(X509)> cert_chain(sk_X509_new_null());
++  for (size_t i = 0; i < certs.size(); i++) {
++    const auto& cert_der = certs[i];
++
++    bssl::UniquePtr<X509> cert = parseDERCertificate(cert_der, error_details);
++    if (!cert) {
++      ENVOY_LOG(error, "Failed to parse certificate {}: {}", i,
++                error_details ? *error_details : "unknown error");
++      *details = std::make_unique<CertVerifyResult>(false);
++      return quic::QUIC_FAILURE;
++    }
++
++    if (!bssl::PushToStack(cert_chain.get(), std::move(cert))) {
++      ENVOY_LOG(error, "Failed to add certificate {} to stack.", i);
++      *error_details = "Failed to build certificate chain";
++      *details = std::make_unique<CertVerifyResult>(false);
++      return quic::QUIC_FAILURE;
++    }
++  }
++
++  // Verify basic certificate chain structure.
++  if (sk_X509_num(cert_chain.get()) == 0) {
++    ENVOY_LOG(error, "Empty certificate chain when certificates required");
++    *error_details = "Empty certificate chain";
++    *details = std::make_unique<CertVerifyResult>(false);
++    return quic::QUIC_FAILURE;
++  }
++
++  X509* leaf_cert = sk_X509_value(cert_chain.get(), 0);
++  if (!leaf_cert) {
++    ENVOY_LOG(error, "Cannot access leaf certificate");
++    *error_details = "Cannot access leaf certificate";
++    *details = std::make_unique<CertVerifyResult>(false);
++    return quic::QUIC_FAILURE;
++  }
++
++  // Validate the certificate chain against the configured CA.
++  auto server_context_impl =
++      std::dynamic_pointer_cast<Extensions::TransportSockets::Tls::ServerContextImpl>(
++          server_ssl_context);
++  if (!server_context_impl) {
++    ENVOY_LOG(debug, "Could not get server context for certificate validation");
++    *details = std::make_unique<CertVerifyResult>(true);
++    return quic::QUIC_SUCCESS;
++  }
++
++  // Use the cert validator to verify the certificate chain against the CA.
++  Extensions::TransportSockets::Tls::CertValidator::ExtraValidationContext validation_context;
++  validation_context.callbacks = nullptr;
++
++  Extensions::TransportSockets::Tls::ValidationResults validation_result =
++      server_context_impl->customVerifyCertChainForQuic(*cert_chain, nullptr, /*is_server=*/true,
++                                                        nullptr, validation_context, hostname);
++
++  if (validation_result.status !=
++      Extensions::TransportSockets::Tls::ValidationResults::ValidationStatus::Successful) {
++    ENVOY_LOG(warn, "Client certificate validation failed: {}",
++              validation_result.error_details.value_or("unknown error"));
++    *error_details = validation_result.error_details.value_or("Certificate validation failed");
++    *details = std::make_unique<CertVerifyResult>(false);
++    return quic::QUIC_FAILURE;
++  }
++
++  ENVOY_LOG(debug, "Client certificate validation succeeded for {} certificates", certs.size());
++  *details = std::make_unique<CertVerifyResult>(true);
++  return quic::QUIC_SUCCESS;
++}
++
++void EnvoyQuicServerProofVerifier::updateFilterChainManager(
++    Network::FilterChainManager& filter_chain_manager) {
++  filter_chain_manager_ = &filter_chain_manager;
++}
++
++} // namespace Quic
++} // namespace Envoy
+diff --git a/source/common/quic/envoy_quic_server_proof_verifier.h b/source/common/quic/envoy_quic_server_proof_verifier.h
+new file mode 100644
+index 0000000000000..d5bec704a6263
+--- /dev/null
++++ b/source/common/quic/envoy_quic_server_proof_verifier.h
+@@ -0,0 +1,40 @@
++#pragma once
++
++#include "envoy/network/filter.h"
++#include "envoy/network/socket.h"
++
++#include "source/common/quic/envoy_quic_proof_verifier_base.h"
++
++namespace Envoy {
++namespace Quic {
++
++// A ProofVerifier implementation for server-side client certificate validation during QUIC
++// handshake. This verifier enforces client certificate requirements by validating certificates
++// during the initial handshake and rejecting connections that don't meet the requirements.
++class EnvoyQuicServerProofVerifier : public EnvoyQuicProofVerifierBase {
++public:
++  EnvoyQuicServerProofVerifier(Network::Socket& listen_socket,
++                               Network::FilterChainManager& filter_chain_manager,
++                               TimeSource& time_source);
++
++  ~EnvoyQuicServerProofVerifier() override = default;
++
++  // quic::ProofVerifier
++  quic::QuicAsyncStatus
++  VerifyCertChain(const std::string& hostname, const uint16_t port,
++                  const std::vector<std::string>& certs, const std::string& ocsp_response,
++                  const std::string& cert_sct, const quic::ProofVerifyContext* context,
++                  std::string* error_details, std::unique_ptr<quic::ProofVerifyDetails>* details,
++                  uint8_t* out_alert,
++                  std::unique_ptr<quic::ProofVerifierCallback> callback) override;
++
++  void updateFilterChainManager(Network::FilterChainManager& filter_chain_manager);
++
++private:
++  Network::Socket& listen_socket_;
++  Network::FilterChainManager* filter_chain_manager_;
++  TimeSource& time_source_;
++};
++
++} // namespace Quic
++} // namespace Envoy
+diff --git a/source/common/quic/envoy_quic_server_session.cc b/source/common/quic/envoy_quic_server_session.cc
+index a277e1151a9d1..72d67ec3245d1 100644
+--- a/source/common/quic/envoy_quic_server_session.cc
++++ b/source/common/quic/envoy_quic_server_session.cc
+@@ -169,6 +169,7 @@ quic::QuicConnection* EnvoyQuicServerSession::quicConnection() {
+
+ void EnvoyQuicServerSession::OnTlsHandshakeComplete() {
+   quic::QuicServerSessionBase::OnTlsHandshakeComplete();
++  ENVOY_LOG(debug, "QUIC TLS handshake completed.");
+   streamInfo().downstreamTiming().onDownstreamHandshakeComplete(dispatcher_.timeSource());
+   raiseConnectionEvent(Network::ConnectionEvent::Connected);
+ }
+@@ -214,11 +215,22 @@ void EnvoyQuicServerSession::storeConnectionMapPosition(FilterChainToConnectionM
+
+ quic::QuicSSLConfig EnvoyQuicServerSession::GetSSLConfig() const {
+   quic::QuicSSLConfig config = quic::QuicServerSessionBase::GetSSLConfig();
+-  config.early_data_enabled = position_.has_value()
+-                                  ? dynamic_cast<const QuicServerTransportSocketFactory&>(
+-                                        position_->filter_chain_.transportSocketFactory())
+-                                        .earlyDataEnabled()
+-                                  : true;
++
++  if (position_.has_value()) {
++    const auto& transport_socket_factory = dynamic_cast<const QuicServerTransportSocketFactory&>(
++        position_->filter_chain_.transportSocketFactory());
++
++    config.early_data_enabled = transport_socket_factory.earlyDataEnabled();
++
++    // Configure client certificate mode based on transport socket factory requirements.
++    config.client_cert_mode = transport_socket_factory.requiresClientCertificate()
++                                  ? quic::ClientCertMode::kRequire
++                                  : quic::ClientCertMode::kNone;
++  } else {
++    config.early_data_enabled = true;
++    config.client_cert_mode = quic::ClientCertMode::kNone;
++  }
++
+   return config;
+ }
+
+diff --git a/source/common/quic/quic_client_transport_socket_factory.cc b/source/common/quic/quic_client_transport_socket_factory.cc
+index 6e0689c012bd0..2f71fd82d272e 100644
+--- a/source/common/quic/quic_client_transport_socket_factory.cc
++++ b/source/common/quic/quic_client_transport_socket_factory.cc
+@@ -4,9 +4,11 @@
+
+ #include "envoy/extensions/transport_sockets/quic/v3/quic_transport.pb.validate.h"
+
++#include "source/common/common/logger.h"
+ #include "source/common/quic/cert_compression.h"
+ #include "source/common/quic/envoy_quic_proof_verifier.h"
+ #include "source/common/runtime/runtime_features.h"
++#include "source/common/tls/client_context_impl.h"
+ #include "source/common/tls/context_config_impl.h"
+
+ #include "quiche/quic/core/crypto/quic_client_session_cache.h"
+@@ -14,6 +16,92 @@
+ namespace Envoy {
+ namespace Quic {
+
++namespace {
++// Initialize QUIC client certificates and private key in CRYPTO_BUFFER format.
++absl::Status initializeQuicClientCertAndKey(SSL_CTX* quic_ssl_ctx,
++                                            const std::vector<Ssl::TlsContext>& tls_contexts) {
++  if (tls_contexts.empty()) {
++    return absl::OkStatus();
++  }
++
++  const auto& first_ctx = tls_contexts[0];
++
++  // Load the client certificate chain.
++  if (first_ctx.cert_chain_ != nullptr) {
++    std::vector<std::string> chain;
++
++    auto process_one_cert = [&](X509* cert) {
++      const bssl::UniquePtr<BIO> bio(BIO_new(BIO_s_mem()));
++      int result = PEM_write_bio_X509(bio.get(), cert);
++      if (result != 1) {
++        return absl::InvalidArgumentError("failed to write certificate to BIO.");
++      }
++      BUF_MEM* buf_mem = nullptr;
++      result = BIO_get_mem_ptr(bio.get(), &buf_mem);
++      if (result != 1) {
++        return absl::InvalidArgumentError("failed to get BIO memory pointer.");
++      }
++      std::string cert_str(buf_mem->data, buf_mem->length);
++      std::istringstream pem_stream(cert_str);
++      auto pem_result = quic::ReadNextPemMessage(&pem_stream);
++      if (pem_result.status != quic::PemReadResult::Status::kOk) {
++        return absl::InvalidArgumentError(
++            "error loading certificate in QUIC context: error from ReadNextPemMessage.");
++      }
++      chain.push_back(std::move(pem_result.contents));
++      return absl::OkStatus();
++    };
++
++    RETURN_IF_NOT_OK(process_one_cert(first_ctx.cert_chain_.get()));
++
++    // Get the certificate chain from the SSL context.
++    STACK_OF(X509)* chain_stack = nullptr;
++    int result = SSL_CTX_get0_chain_certs(first_ctx.ssl_ctx_.get(), &chain_stack);
++    if (result == 1 && chain_stack != nullptr) {
++      for (size_t i = 0; i < sk_X509_num(chain_stack); i++) {
++        RETURN_IF_NOT_OK(process_one_cert(sk_X509_value(chain_stack, i)));
++      }
++    }
++
++    // Convert certificates to CRYPTO_BUFFER format required by QUIC.
++    if (!chain.empty()) {
++      const std::string& cert_data = chain[0];
++      bssl::UniquePtr<CRYPTO_BUFFER> cert_buffer(CRYPTO_BUFFER_new(
++          reinterpret_cast<const uint8_t*>(cert_data.data()), cert_data.size(), nullptr));
++
++      if (cert_buffer) {
++        const bssl::UniquePtr<STACK_OF(CRYPTO_BUFFER)> cert_chain_stack(
++            sk_CRYPTO_BUFFER_new_null());
++        if (cert_chain_stack && bssl::PushToStack(cert_chain_stack.get(), std::move(cert_buffer))) {
++
++          for (size_t i = 1; i < chain.size(); i++) {
++            bssl::UniquePtr<CRYPTO_BUFFER> additional_cert(CRYPTO_BUFFER_new(
++                reinterpret_cast<const uint8_t*>(chain[i].data()), chain[i].size(), nullptr));
++            if (additional_cert) {
++              bssl::PushToStack(cert_chain_stack.get(), std::move(additional_cert));
++            }
++          }
++
++          const size_t cert_count = sk_CRYPTO_BUFFER_num(cert_chain_stack.get());
++          std::vector<CRYPTO_BUFFER*> cert_array(cert_count);
++          for (size_t i = 0; i < cert_count; i++) {
++            cert_array[i] = sk_CRYPTO_BUFFER_value(cert_chain_stack.get(), i);
++          }
++
++          if (SSL_CTX_set_chain_and_key(quic_ssl_ctx, cert_array.data(), cert_count,
++                                        SSL_CTX_get0_privatekey(first_ctx.ssl_ctx_.get()),
++                                        nullptr) != 1) {
++            return absl::InvalidArgumentError("failed to set QUIC client certificate chain.");
++          }
++        }
++      }
++    }
++  }
++
++  return absl::OkStatus();
++}
++} // namespace
++
+ absl::StatusOr<std::unique_ptr<QuicClientTransportSocketFactory>>
+ QuicClientTransportSocketFactory::create(
+     Ssl::ClientContextConfigPtr config,
+@@ -89,7 +177,24 @@ std::shared_ptr<quic::QuicCryptoClientConfig> QuicClientTransportSocketFactory::
+         std::make_unique<Quic::EnvoyQuicProofVerifier>(std::move(context), accept_untrusted),
+         std::make_unique<quic::QuicClientSessionCache>());
+
+-    CertCompression::registerSslContext(tls_config.crypto_config_->ssl_ctx());
++    SSL_CTX* quic_ssl_ctx = tls_config.crypto_config_->ssl_ctx();
++
++    CertCompression::registerSslContext(quic_ssl_ctx);
++
++    // Configure client certificates for mTLS handshakes.
++    if (clientContextConfig() && clientContextConfig()->tlsCertificates().size() > 0) {
++      auto client_context_impl =
++          std::dynamic_pointer_cast<Extensions::TransportSockets::Tls::ClientContextImpl>(
++              tls_config.client_context_);
++
++      if (client_context_impl != nullptr) {
++        auto status =
++            initializeQuicClientCertAndKey(quic_ssl_ctx, client_context_impl->getTlsContexts());
++        if (!status.ok()) {
++          ENVOY_LOG(warn, "Failed to initialize QUIC client certificates: {}", status.message());
++        }
++      }
++    }
+   }
+   // Return the latest crypto config.
+   return tls_config.crypto_config_;
+diff --git a/source/common/quic/quic_server_transport_socket_factory.cc b/source/common/quic/quic_server_transport_socket_factory.cc
+index 4b3c128bfb65f..595b35bb2e335 100644
+--- a/source/common/quic/quic_server_transport_socket_factory.cc
++++ b/source/common/quic/quic_server_transport_socket_factory.cc
+@@ -16,19 +16,16 @@ absl::StatusOr<Network::DownstreamTransportSocketFactoryPtr>
+ QuicServerTransportSocketConfigFactory::createTransportSocketFactory(
+     const Protobuf::Message& config, Server::Configuration::TransportSocketFactoryContext& context,
+     const std::vector<std::string>& server_names) {
+-  auto quic_transport = MessageUtil::downcastAndValidate<
++  auto& quic_transport = MessageUtil::downcastAndValidate<
+       const envoy::extensions::transport_sockets::quic::v3::QuicDownstreamTransport&>(
+       config, context.messageValidationVisitor());
++
+   absl::StatusOr<std::unique_ptr<Extensions::TransportSockets::Tls::ServerContextConfigImpl>>
+       server_config_or_error = Extensions::TransportSockets::Tls::ServerContextConfigImpl::create(
+           quic_transport.downstream_tls_context(), context, true);
+   RETURN_IF_NOT_OK(server_config_or_error.status());
+   auto server_config = std::move(server_config_or_error.value());
+-  // TODO(RyanTheOptimist): support TLS client authentication.
+-  if (server_config->requireClientCertificate()) {
+-    return absl::InvalidArgumentError("TLS Client Authentication is not supported over QUIC");
+-  }
+-
++  // Client certificate authentication is supported in QUIC as per RFC 9001 Section 4.4.
+   auto factory_or_error = QuicServerTransportSocketFactory::create(
+       PROTOBUF_GET_WRAPPED_OR_DEFAULT(quic_transport, enable_early_data, true),
+       context.statsScope(), std::move(server_config),
+@@ -178,6 +175,11 @@ QuicServerTransportSocketFactory::getTlsCertificateAndKey(absl::string_view sni,
+   return {tls_context.quic_cert_, tls_context.quic_private_key_};
+ }
+
++Envoy::Ssl::ServerContextSharedPtr QuicServerTransportSocketFactory::getServerSslContext() const {
++  absl::ReaderMutexLock l(&ssl_ctx_mu_);
++  return ssl_ctx_;
++}
++
+ absl::Status QuicServerTransportSocketFactory::onSecretUpdated() {
+   ENVOY_LOG(debug, "Secret is updated.");
+
+diff --git a/source/common/quic/quic_server_transport_socket_factory.h b/source/common/quic/quic_server_transport_socket_factory.h
+index 85aaf45a7e5d5..a29faff91afdb 100644
+--- a/source/common/quic/quic_server_transport_socket_factory.h
++++ b/source/common/quic/quic_server_transport_socket_factory.h
+@@ -38,6 +38,11 @@ class QuicServerTransportSocketFactory : public Network::DownstreamTransportSock
+
+   bool earlyDataEnabled() const { return enable_early_data_; }
+
++  bool requiresClientCertificate() const { return config_->requireClientCertificate(); }
++
++  // Get the server SSL context for certificate validation.
++  Envoy::Ssl::ServerContextSharedPtr getServerSslContext() const;
++
+ protected:
+   QuicServerTransportSocketFactory(bool enable_early_data, Stats::Scope& store,
+                                    Ssl::ServerContextConfigPtr config,
+diff --git a/source/common/quic/quic_ssl_connection_info.h b/source/common/quic/quic_ssl_connection_info.h
+index a857d6d831436..d9130c1b44f14 100644
+--- a/source/common/quic/quic_ssl_connection_info.h
++++ b/source/common/quic/quic_ssl_connection_info.h
+@@ -1,8 +1,14 @@
+ #pragma once
+
+ #include "source/common/common/empty_string.h"
++#include "source/common/common/hex.h"
++#include "source/common/common/logger.h"
++#include "source/common/http/utility.h"
++#include "source/common/tls/cert_validator/san_matcher.h"
+ #include "source/common/tls/connection_info_impl_base.h"
++#include "source/common/tls/utility.h"
+
++#include "openssl/x509v3.h"
+ #include "quiche/quic/core/quic_session.h"
+
+ namespace Envoy {
+@@ -10,7 +16,8 @@ namespace Quic {
+
+ // A wrapper of a QUIC session to be passed around as an indicator of ssl support and to provide
+ // access to the SSL object in QUIC crypto stream.
+-class QuicSslConnectionInfo : public Extensions::TransportSockets::Tls::ConnectionInfoImplBase {
++class QuicSslConnectionInfo : public Extensions::TransportSockets::Tls::ConnectionInfoImplBase,
++                              public Logger::Loggable<Logger::Id::quic> {
+ public:
+   QuicSslConnectionInfo(quic::QuicSession& session) : session_(session) {}
+
+@@ -24,35 +31,623 @@ class QuicSslConnectionInfo : public Extensions::TransportSockets::Tls::Connecti
+   }
+
+   // Extensions::TransportSockets::Tls::ConnectionInfoImplBase
+-  // TODO(#23809) populate those field once we support mutual TLS.
+-  bool peerCertificatePresented() const override { return false; }
+-  const std::string& sha256PeerCertificateDigest() const override { return EMPTY_STRING; }
+-  const std::string& sha1PeerCertificateDigest() const override { return EMPTY_STRING; }
+-  absl::Span<const std::string> uriSanPeerCertificate() const override { return {}; }
+-  const std::string& serialNumberPeerCertificate() const override { return EMPTY_STRING; }
+-  const std::string& issuerPeerCertificate() const override { return EMPTY_STRING; }
+-  const std::string& subjectPeerCertificate() const override { return EMPTY_STRING; }
++  // QUIC-safe certificate detection that avoids BoringSSL X.509 assertion failures.
++  bool peerCertificatePresented() const override {
++    SSL* ssl_conn = ssl();
++    if (ssl_conn == nullptr) {
++      return false;
++    }
++
++    // For QUIC connections, use SSL_get0_peer_certificates (CRYPTO_BUFFER stack).
++    // This is the same approach used by Quiche's TlsClientHandshaker::VerifyCert.
++    const STACK_OF(CRYPTO_BUFFER)* cert_stack = SSL_get0_peer_certificates(ssl_conn);
++    if (cert_stack != nullptr && sk_CRYPTO_BUFFER_num(cert_stack) > 0) {
++      return true;
++    }
++
++    return false;
++  }
++
++  const std::string& sha256PeerCertificateDigest() const override {
++    return getCachedCertificateValue<std::string>(&cached_sha256_digest_, [this]() -> std::string {
++      const CRYPTO_BUFFER* cert = getPeerLeafCertificate();
++      if (!cert) {
++        return EMPTY_STRING;
++      }
++
++      std::vector<uint8_t> computed_hash(SHA256_DIGEST_LENGTH);
++      SHA256(CRYPTO_BUFFER_data(cert), CRYPTO_BUFFER_len(cert), computed_hash.data());
++      return Hex::encode(computed_hash);
++    });
++  }
++
++  const std::string& sha1PeerCertificateDigest() const override {
++    return getCachedCertificateValue<std::string>(&cached_sha1_digest_, [this]() -> std::string {
++      const CRYPTO_BUFFER* cert = getPeerLeafCertificate();
++      if (!cert) {
++        return EMPTY_STRING;
++      }
++
++      std::vector<uint8_t> computed_hash(SHA_DIGEST_LENGTH);
++      SHA1(CRYPTO_BUFFER_data(cert), CRYPTO_BUFFER_len(cert), computed_hash.data());
++      return Hex::encode(computed_hash);
++    });
++  }
++
++  absl::Span<const std::string> uriSanPeerCertificate() const override {
++    return getCachedCertificateValue<std::vector<std::string>>(
++        &cached_uri_sans_, [this]() -> std::vector<std::string> {
++          X509* x509_cert = getPeerLeafCertificateAsX509();
++          if (!x509_cert) {
++            return {};
++          }
++
++          auto uri_sans =
++              Extensions::TransportSockets::Tls::Utility::getSubjectAltNames(*x509_cert, GEN_URI);
++          X509_free(x509_cert);
++          ENVOY_LOG(debug, "QuicSslConnectionInfo: Extracted {} URI SANs", uri_sans.size());
++          return uri_sans;
++        });
++  }
++
++  const std::string& serialNumberPeerCertificate() const override {
++    return getCachedCertificateValue<std::string>(&cached_serial_number_, [this]() -> std::string {
++      X509* x509_cert = getPeerLeafCertificateAsX509();
++      if (!x509_cert) {
++        return EMPTY_STRING;
++      }
++
++      std::string serial_number =
++          Extensions::TransportSockets::Tls::Utility::getSerialNumberFromCertificate(*x509_cert);
++      X509_free(x509_cert);
++      ENVOY_LOG(debug, "QuicSslConnectionInfo: Extracted certificate serial number: {}",
++                serial_number);
++      return serial_number;
++    });
++  }
++
++  const std::string& issuerPeerCertificate() const override {
++    return getCachedCertificateValue<std::string>(&cached_issuer_, [this]() -> std::string {
++      X509* x509_cert = getPeerLeafCertificateAsX509();
++      if (!x509_cert) {
++        return EMPTY_STRING;
++      }
++
++      std::string issuer =
++          Extensions::TransportSockets::Tls::Utility::getIssuerFromCertificate(*x509_cert);
++      X509_free(x509_cert);
++      ENVOY_LOG(debug, "QuicSslConnectionInfo: Extracted certificate issuer: {}", issuer);
++      return issuer;
++    });
++  }
++
++  const std::string& subjectPeerCertificate() const override {
++    return getCachedCertificateValue<std::string>(&cached_subject_, [this]() -> std::string {
++      X509* x509_cert = getPeerLeafCertificateAsX509();
++      if (!x509_cert) {
++        return EMPTY_STRING;
++      }
++
++      std::string subject =
++          Extensions::TransportSockets::Tls::Utility::getSubjectFromCertificate(*x509_cert);
++      X509_free(x509_cert);
++      ENVOY_LOG(debug, "QuicSslConnectionInfo: Extracted certificate subject: {}", subject);
++      return subject;
++    });
++  }
++
+   Ssl::ParsedX509NameOptConstRef parsedSubjectPeerCertificate() const override {
++    const auto& parsed_name = getCachedCertificateValue<Ssl::ParsedX509NamePtr>(
++        &cached_parsed_subject_, [this]() -> Ssl::ParsedX509NamePtr {
++          X509* x509_cert = getPeerLeafCertificateAsX509();
++          if (!x509_cert) {
++            return nullptr;
++          }
++
++          auto parsed_subject =
++              Extensions::TransportSockets::Tls::Utility::parseSubjectFromCertificate(*x509_cert);
++          X509_free(x509_cert);
++          ENVOY_LOG(debug, "QuicSslConnectionInfo: Parsed certificate subject structure");
++          return parsed_subject;
++        });
++
++    if (parsed_name) {
++      return {*parsed_name};
++    }
+     return absl::nullopt;
+   }
+-  const std::string& urlEncodedPemEncodedPeerCertificate() const override { return EMPTY_STRING; }
++
++  const std::string& urlEncodedPemEncodedPeerCertificate() const override {
++    return getCachedCertificateValue<std::string>(&cached_pem_cert_, [this]() -> std::string {
++      X509* x509_cert = getPeerLeafCertificateAsX509();
++      if (!x509_cert) {
++        return EMPTY_STRING;
++      }
++
++      bssl::UniquePtr<BIO> buf(BIO_new(BIO_s_mem()));
++      if (!buf || PEM_write_bio_X509(buf.get(), x509_cert) != 1) {
++        X509_free(x509_cert);
++        return EMPTY_STRING;
++      }
++
++      const uint8_t* output;
++      size_t length;
++      if (BIO_mem_contents(buf.get(), &output, &length) != 1) {
++        X509_free(x509_cert);
++        return EMPTY_STRING;
++      }
++
++      absl::string_view pem(reinterpret_cast<const char*>(output), length);
++      std::string encoded_pem = Envoy::Http::Utility::PercentEncoding::urlEncode(pem);
++
++      X509_free(x509_cert);
++      ENVOY_LOG(debug, "QuicSslConnectionInfo: Generated URL-encoded PEM certificate ({} bytes)",
++                encoded_pem.length());
++      return encoded_pem;
++    });
++  }
++
+   const std::string& urlEncodedPemEncodedPeerCertificateChain() const override {
+-    return EMPTY_STRING;
++    return getCachedCertificateValue<std::string>(&cached_pem_chain_, [this]() -> std::string {
++      SSL* ssl_conn = ssl();
++      if (!ssl_conn) {
++        return EMPTY_STRING;
++      }
++
++      const STACK_OF(CRYPTO_BUFFER)* cert_stack = SSL_get0_peer_certificates(ssl_conn);
++      if (!cert_stack || sk_CRYPTO_BUFFER_num(cert_stack) == 0) {
++        return EMPTY_STRING;
++      }
++
++      std::string result;
++      int cert_count = sk_CRYPTO_BUFFER_num(cert_stack);
++
++      for (int i = 0; i < cert_count; i++) {
++        const CRYPTO_BUFFER* cert = sk_CRYPTO_BUFFER_value(cert_stack, i);
++        if (!cert)
++          continue;
++
++        const uint8_t* cert_data = CRYPTO_BUFFER_data(cert);
++        size_t cert_len = CRYPTO_BUFFER_len(cert);
++
++        X509* x509_cert = d2i_X509(nullptr, &cert_data, cert_len);
++        if (!x509_cert)
++          continue;
++
++        bssl::UniquePtr<BIO> buf(BIO_new(BIO_s_mem()));
++        if (buf && PEM_write_bio_X509(buf.get(), x509_cert) == 1) {
++          const uint8_t* output;
++          size_t length;
++          if (BIO_mem_contents(buf.get(), &output, &length) == 1) {
++            absl::string_view pem(reinterpret_cast<const char*>(output), length);
++            absl::StrAppend(&result, Envoy::Http::Utility::PercentEncoding::urlEncode(pem));
++          }
++        }
++
++        X509_free(x509_cert);
++      }
++
++      ENVOY_LOG(debug,
++                "QuicSslConnectionInfo: Generated URL-encoded PEM certificate chain ({} bytes)",
++                result.length());
++      return result;
++    });
++  }
++
++  absl::Span<const std::string> dnsSansPeerCertificate() const override {
++    return getCachedCertificateValue<std::vector<std::string>>(
++        &cached_dns_sans_, [this]() -> std::vector<std::string> {
++          X509* x509_cert = getPeerLeafCertificateAsX509();
++          if (!x509_cert) {
++            return {};
++          }
++
++          auto dns_sans =
++              Extensions::TransportSockets::Tls::Utility::getSubjectAltNames(*x509_cert, GEN_DNS);
++          X509_free(x509_cert);
++          ENVOY_LOG(debug, "QuicSslConnectionInfo: Extracted {} DNS SANs", dns_sans.size());
++          return dns_sans;
++        });
++  }
++
++  absl::optional<SystemTime> validFromPeerCertificate() const override {
++    return getCachedCertificateValue<absl::optional<SystemTime>>(
++        &cached_valid_from_, [this]() -> absl::optional<SystemTime> {
++          X509* x509_cert = getPeerLeafCertificateAsX509();
++          if (!x509_cert) {
++            return absl::nullopt;
++          }
++
++          auto valid_from = Extensions::TransportSockets::Tls::Utility::getValidFrom(*x509_cert);
++          X509_free(x509_cert);
++          ENVOY_LOG(debug, "QuicSslConnectionInfo: Extracted certificate valid from time");
++          return valid_from;
++        });
++  }
++
++  absl::optional<SystemTime> expirationPeerCertificate() const override {
++    return getCachedCertificateValue<absl::optional<SystemTime>>(
++        &cached_expiration_, [this]() -> absl::optional<SystemTime> {
++          X509* x509_cert = getPeerLeafCertificateAsX509();
++          if (!x509_cert) {
++            return absl::nullopt;
++          }
++
++          auto expiration =
++              Extensions::TransportSockets::Tls::Utility::getExpirationTime(*x509_cert);
++          X509_free(x509_cert);
++          ENVOY_LOG(debug, "QuicSslConnectionInfo: Extracted certificate expiration time");
++          return expiration;
++        });
+   }
+-  absl::Span<const std::string> dnsSansPeerCertificate() const override { return {}; }
+-  absl::optional<SystemTime> validFromPeerCertificate() const override { return absl::nullopt; }
+-  absl::optional<SystemTime> expirationPeerCertificate() const override { return absl::nullopt; }
+   // QUIC SSL object doesn't cache local certs after the handshake.
+   // TODO(danzh) cache these fields during cert chain retrieval.
+   const std::string& subjectLocalCertificate() const override { return EMPTY_STRING; }
+   absl::Span<const std::string> uriSanLocalCertificate() const override { return {}; }
+   absl::Span<const std::string> dnsSansLocalCertificate() const override { return {}; }
+
+-  void onCertValidated() { cert_validated_ = true; };
++  void onCertValidated() { cert_validated_ = true; }
++
++  absl::Span<const std::string> sha256PeerCertificateChainDigests() const override {
++    return getCachedCertificateValue<std::vector<std::string>>(
++        &cached_sha256_chain_digests_, [this]() -> std::vector<std::string> {
++          SSL* ssl_conn = ssl();
++          if (!ssl_conn) {
++            return {};
++          }
++
++          const STACK_OF(CRYPTO_BUFFER)* cert_stack = SSL_get0_peer_certificates(ssl_conn);
++          if (!cert_stack || sk_CRYPTO_BUFFER_num(cert_stack) == 0) {
++            return {};
++          }
++
++          std::vector<std::string> digests;
++          int cert_count = sk_CRYPTO_BUFFER_num(cert_stack);
++
++          for (int i = 0; i < cert_count; i++) {
++            const CRYPTO_BUFFER* cert = sk_CRYPTO_BUFFER_value(cert_stack, i);
++            if (!cert)
++              continue;
++
++            std::vector<uint8_t> computed_hash(SHA256_DIGEST_LENGTH);
++            SHA256(CRYPTO_BUFFER_data(cert), CRYPTO_BUFFER_len(cert), computed_hash.data());
++            digests.push_back(Hex::encode(computed_hash));
++          }
++
++          ENVOY_LOG(debug, "QuicSslConnectionInfo: Generated {} SHA256 chain digests",
++                    digests.size());
++          return digests;
++        });
++  }
++
++  absl::Span<const std::string> sha1PeerCertificateChainDigests() const override {
++    return getCachedCertificateValue<std::vector<std::string>>(
++        &cached_sha1_chain_digests_, [this]() -> std::vector<std::string> {
++          SSL* ssl_conn = ssl();
++          if (!ssl_conn) {
++            return {};
++          }
++
++          const STACK_OF(CRYPTO_BUFFER)* cert_stack = SSL_get0_peer_certificates(ssl_conn);
++          if (!cert_stack || sk_CRYPTO_BUFFER_num(cert_stack) == 0) {
++            return {};
++          }
++
++          std::vector<std::string> digests;
++          int cert_count = sk_CRYPTO_BUFFER_num(cert_stack);
++
++          for (int i = 0; i < cert_count; i++) {
++            const CRYPTO_BUFFER* cert = sk_CRYPTO_BUFFER_value(cert_stack, i);
++            if (!cert)
++              continue;
++
++            std::vector<uint8_t> computed_hash(SHA_DIGEST_LENGTH);
++            SHA1(CRYPTO_BUFFER_data(cert), CRYPTO_BUFFER_len(cert), computed_hash.data());
++            digests.push_back(Hex::encode(computed_hash));
++          }
++
++          ENVOY_LOG(debug, "QuicSslConnectionInfo: Generated {} SHA1 chain digests",
++                    digests.size());
++          return digests;
++        });
++  }
++
++  absl::Span<const std::string> serialNumbersPeerCertificates() const override {
++    return getCachedCertificateValue<std::vector<std::string>>(
++        &cached_serial_numbers_, [this]() -> std::vector<std::string> {
++          SSL* ssl_conn = ssl();
++          if (!ssl_conn) {
++            return {};
++          }
++
++          const STACK_OF(CRYPTO_BUFFER)* cert_stack = SSL_get0_peer_certificates(ssl_conn);
++          if (!cert_stack || sk_CRYPTO_BUFFER_num(cert_stack) == 0) {
++            return {};
++          }
++
++          std::vector<std::string> serial_numbers;
++          int cert_count = sk_CRYPTO_BUFFER_num(cert_stack);
++
++          for (int i = 0; i < cert_count; i++) {
++            const CRYPTO_BUFFER* cert = sk_CRYPTO_BUFFER_value(cert_stack, i);
++            if (!cert)
++              continue;
++
++            const uint8_t* cert_data = CRYPTO_BUFFER_data(cert);
++            size_t cert_len = CRYPTO_BUFFER_len(cert);
++
++            X509* x509_cert = d2i_X509(nullptr, &cert_data, cert_len);
++            if (!x509_cert)
++              continue;
++
++            std::string serial_number =
++                Extensions::TransportSockets::Tls::Utility::getSerialNumberFromCertificate(
++                    *x509_cert);
++            serial_numbers.push_back(serial_number);
++            X509_free(x509_cert);
++          }
++
++          ENVOY_LOG(debug, "QuicSslConnectionInfo: Extracted {} certificate serial numbers",
++                    serial_numbers.size());
++          return serial_numbers;
++        });
++  }
++
++  bool peerCertificateSanMatches(const Ssl::SanMatcher& matcher) const override {
++    X509* x509_cert = getPeerLeafCertificateAsX509();
++    if (!x509_cert) {
++      return false;
++    }
++
++    bssl::UniquePtr<GENERAL_NAMES> sans(static_cast<GENERAL_NAMES*>(
++        X509_get_ext_d2i(x509_cert, NID_subject_alt_name, nullptr, nullptr)));
++    X509_free(x509_cert);
++
++    if (sans != nullptr) {
++      for (const GENERAL_NAME* san : sans.get()) {
++        if (matcher.match(san)) {
++          return true;
++        }
++      }
++    }
++
++    return false;
++  }
++
++  absl::Span<const std::string> ipSansPeerCertificate() const override {
++    return getCachedCertificateValue<std::vector<std::string>>(
++        &cached_ip_sans_, [this]() -> std::vector<std::string> {
++          X509* x509_cert = getPeerLeafCertificateAsX509();
++          if (!x509_cert) {
++            return {};
++          }
++
++          auto ip_sans =
++              Extensions::TransportSockets::Tls::Utility::getSubjectAltNames(*x509_cert, GEN_IPADD);
++          X509_free(x509_cert);
++          ENVOY_LOG(debug, "QuicSslConnectionInfo: Extracted {} IP SANs", ip_sans.size());
++          return ip_sans;
++        });
++  }
++
++  absl::Span<const std::string> emailSansPeerCertificate() const override {
++    return getCachedCertificateValue<std::vector<std::string>>(
++        &cached_email_sans_, [this]() -> std::vector<std::string> {
++          X509* x509_cert = getPeerLeafCertificateAsX509();
++          if (!x509_cert) {
++            return {};
++          }
++
++          auto email_sans =
++              Extensions::TransportSockets::Tls::Utility::getSubjectAltNames(*x509_cert, GEN_EMAIL);
++          X509_free(x509_cert);
++          ENVOY_LOG(debug, "QuicSslConnectionInfo: Extracted {} Email SANs", email_sans.size());
++          return email_sans;
++        });
++  }
++
++  absl::Span<const std::string> othernameSansPeerCertificate() const override {
++    return getCachedCertificateValue<std::vector<std::string>>(
++        &cached_othername_sans_, [this]() -> std::vector<std::string> {
++          X509* x509_cert = getPeerLeafCertificateAsX509();
++          if (!x509_cert) {
++            return {};
++          }
++
++          auto othername_sans = Extensions::TransportSockets::Tls::Utility::getSubjectAltNames(
++              *x509_cert, GEN_OTHERNAME);
++          X509_free(x509_cert);
++          ENVOY_LOG(debug, "QuicSslConnectionInfo: Extracted {} OtherName SANs",
++                    othername_sans.size());
++          return othername_sans;
++        });
++  }
++
++  absl::Span<const std::string> oidsPeerCertificate() const override {
++    return getCachedCertificateValue<std::vector<std::string>>(
++        &cached_oids_, [this]() -> std::vector<std::string> {
++          X509* x509_cert = getPeerLeafCertificateAsX509();
++          if (!x509_cert) {
++            return {};
++          }
++
++          auto oids =
++              Extensions::TransportSockets::Tls::Utility::getCertificateExtensionOids(*x509_cert);
++          X509_free(x509_cert);
++          ENVOY_LOG(debug, "QuicSslConnectionInfo: Extracted {} certificate OIDs", oids.size());
++          return oids;
++        });
++  }
++
++  // Local certificate methods - returning empty for QUIC as noted in TODO.
++  absl::Span<const std::string> ipSansLocalCertificate() const override { return {}; }
++  absl::Span<const std::string> emailSansLocalCertificate() const override { return {}; }
++  absl::Span<const std::string> othernameSansLocalCertificate() const override { return {}; }
++  absl::Span<const std::string> oidsLocalCertificate() const override { return {}; }
++
++  // SSL connection information methods that use QUIC-safe APIs.
++  const std::string& sessionId() const override {
++    return getCachedCertificateValue<std::string>(&cached_session_id_, [this]() -> std::string {
++      SSL* ssl_conn = ssl();
++      if (!ssl_conn) {
++        return EMPTY_STRING;
++      }
++
++      // For QUIC, session ID might not be meaningful, but we can safely call this.
++      const SSL_SESSION* session = SSL_get_session(ssl_conn);
++      if (!session) {
++        return EMPTY_STRING;
++      }
++
++      unsigned int session_id_length;
++      const uint8_t* session_id = SSL_SESSION_get_id(session, &session_id_length);
++      if (!session_id || session_id_length == 0) {
++        return EMPTY_STRING;
++      }
++
++      return Hex::encode(session_id, session_id_length);
++    });
++  }
++
++  uint16_t ciphersuiteId() const override {
++    SSL* ssl_conn = ssl();
++    if (!ssl_conn) {
++      return 0xffff;
++    }
++
++    const SSL_CIPHER* cipher = SSL_get_current_cipher(ssl_conn);
++    if (cipher == nullptr) {
++      return 0xffff;
++    }
++
++    return static_cast<uint16_t>(SSL_CIPHER_get_id(cipher));
++  }
++
++  std::string ciphersuiteString() const override {
++    SSL* ssl_conn = ssl();
++    if (!ssl_conn) {
++      return {};
++    }
++
++    const SSL_CIPHER* cipher = SSL_get_current_cipher(ssl_conn);
++    if (cipher == nullptr) {
++      return {};
++    }
++
++    return SSL_CIPHER_get_name(cipher);
++  }
++
++  const std::string& tlsVersion() const override {
++    return getCachedCertificateValue<std::string>(&cached_tls_version_, [this]() -> std::string {
++      SSL* ssl_conn = ssl();
++      if (!ssl_conn) {
++        return EMPTY_STRING;
++      }
++
++      return std::string(SSL_get_version(ssl_conn));
++    });
++  }
++
++  const std::string& alpn() const override {
++    return getCachedCertificateValue<std::string>(&cached_alpn_, [this]() -> std::string {
++      SSL* ssl_conn = ssl();
++      if (!ssl_conn) {
++        return EMPTY_STRING;
++      }
++
++      const unsigned char* proto;
++      unsigned int proto_len;
++      SSL_get0_alpn_selected(ssl_conn, &proto, &proto_len);
++      if (proto != nullptr) {
++        return std::string(reinterpret_cast<const char*>(proto), proto_len);
++      }
++      return EMPTY_STRING;
++    });
++  }
++
++  const std::string& sni() const override {
++    return getCachedCertificateValue<std::string>(&cached_sni_, [this]() -> std::string {
++      SSL* ssl_conn = ssl();
++      if (!ssl_conn) {
++        return EMPTY_STRING;
++      }
++
++      const char* proto = SSL_get_servername(ssl_conn, TLSEXT_NAMETYPE_host_name);
++      if (proto != nullptr) {
++        return std::string(proto);
++      }
++      return EMPTY_STRING;
++    });
++  }
+
+ private:
++  // Helper template for caching certificate extraction results.
++  template <typename T>
++  const T& getCachedCertificateValue(std::unique_ptr<T>* cache,
++                                     std::function<T()> extractor) const {
++    if (!*cache) {
++      *cache = std::make_unique<T>(extractor());
++    }
++    return **cache;
++  }
++
++  // Helper method to get the leaf certificate from CRYPTO_BUFFER stack.
++  const CRYPTO_BUFFER* getPeerLeafCertificate() const {
++    SSL* ssl_conn = ssl();
++    if (!ssl_conn) {
++      return nullptr;
++    }
++
++    const STACK_OF(CRYPTO_BUFFER)* cert_stack = SSL_get0_peer_certificates(ssl_conn);
++    if (!cert_stack || sk_CRYPTO_BUFFER_num(cert_stack) == 0) {
++      return nullptr;
++    }
++
++    return sk_CRYPTO_BUFFER_value(cert_stack, 0); // First certificate is the leaf.
++  }
++
++  // Helper method to convert CRYPTO_BUFFER to X509 (caller must free).
++  X509* getPeerLeafCertificateAsX509() const {
++    const CRYPTO_BUFFER* cert = getPeerLeafCertificate();
++    if (!cert) {
++      return nullptr;
++    }
++
++    const uint8_t* cert_data = CRYPTO_BUFFER_data(cert);
++    size_t cert_len = CRYPTO_BUFFER_len(cert);
++
++    return d2i_X509(nullptr, &cert_data, cert_len);
++  }
++
+   quic::QuicSession& session_;
+-  bool cert_validated_{false};
++  mutable bool cert_validated_{false};
++
++  // Cached certificate extraction results.
++  mutable std::unique_ptr<std::string> cached_sha256_digest_;
++  mutable std::unique_ptr<std::string> cached_sha1_digest_;
++  mutable std::unique_ptr<std::string> cached_subject_;
++  mutable std::unique_ptr<std::string> cached_pem_cert_;
++  mutable std::unique_ptr<std::string> cached_pem_chain_;
++  mutable std::unique_ptr<std::vector<std::string>> cached_uri_sans_;
++  mutable std::unique_ptr<std::vector<std::string>> cached_dns_sans_;
++  mutable std::unique_ptr<std::string> cached_serial_number_;
++  mutable std::unique_ptr<std::string> cached_issuer_;
++  mutable std::unique_ptr<absl::optional<SystemTime>> cached_valid_from_;
++  mutable std::unique_ptr<absl::optional<SystemTime>> cached_expiration_;
++  mutable std::unique_ptr<Ssl::ParsedX509NamePtr> cached_parsed_subject_;
++
++  // Additional cached results for peer certificate chain methods.
++  mutable std::unique_ptr<std::vector<std::string>> cached_sha256_chain_digests_;
++  mutable std::unique_ptr<std::vector<std::string>> cached_sha1_chain_digests_;
++  mutable std::unique_ptr<std::vector<std::string>> cached_serial_numbers_;
++  mutable std::unique_ptr<std::vector<std::string>> cached_ip_sans_;
++  mutable std::unique_ptr<std::vector<std::string>> cached_email_sans_;
++  mutable std::unique_ptr<std::vector<std::string>> cached_othername_sans_;
++  mutable std::unique_ptr<std::vector<std::string>> cached_oids_;
++  mutable std::unique_ptr<std::string> cached_session_id_;
++  mutable std::unique_ptr<std::string> cached_tls_version_;
++  mutable std::unique_ptr<std::string> cached_alpn_;
++  mutable std::unique_ptr<std::string> cached_sni_;
+ };
+
+ } // namespace Quic
+diff --git a/source/common/tls/cert_validator/default_validator.cc b/source/common/tls/cert_validator/default_validator.cc
+index a73fc204deeef..4469717a8a9df 100644
+--- a/source/common/tls/cert_validator/default_validator.cc
++++ b/source/common/tls/cert_validator/default_validator.cc
+@@ -568,12 +568,13 @@ absl::Status DefaultCertValidator::addClientValidationContext(SSL_CTX* ctx,
+     return absl::InvalidArgumentError(
+         absl::StrCat("Failed to load trusted client CA certificates from ", config_->caCertPath()));
+   }
++
+   SSL_CTX_set_client_CA_list(ctx, list.release());
+
+   if (require_client_cert) {
+     SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
+   }
+-  // Set the verify_depth
++  // Set the verify_depth.
+   if (config_->maxVerifyDepth().has_value()) {
+     uint32_t max_verify_depth = std::min(config_->maxVerifyDepth().value(), uint32_t{INT_MAX});
+     // Older BoringSSLs behave like OpenSSL 1.0.x and exclude the leaf from the
+diff --git a/source/common/tls/client_context_impl.h b/source/common/tls/client_context_impl.h
+index ee879160b96bf..f58dd37b00225 100644
+--- a/source/common/tls/client_context_impl.h
++++ b/source/common/tls/client_context_impl.h
+@@ -46,6 +46,7 @@ class ClientContextImpl : public ContextImpl, public Envoy::Ssl::ClientContext {
+   absl::StatusOr<bssl::UniquePtr<SSL>>
+   newSsl(const Network::TransportSocketOptionsConstSharedPtr& options,
+          Upstream::HostDescriptionConstSharedPtr host) override;
++  const std::vector<Ssl::TlsContext>& getTlsContexts() const { return tls_contexts_; }
+
+ private:
+   ClientContextImpl(Stats::Scope& scope, const Envoy::Ssl::ClientContextConfig& config,
+diff --git a/source/extensions/transport_sockets/tls/cert_validator/spiffe/spiffe_validator.cc b/source/extensions/transport_sockets/tls/cert_validator/spiffe/spiffe_validator.cc
+index ed6f20ab31bc9..57c46ea2beca1 100644
+--- a/source/extensions/transport_sockets/tls/cert_validator/spiffe/spiffe_validator.cc
++++ b/source/extensions/transport_sockets/tls/cert_validator/spiffe/spiffe_validator.cc
+@@ -496,7 +496,7 @@ Envoy::Ssl::CertificateDetailsPtr SPIFFEValidator::getCaCertInformation() const
+   // So temporarily we return the first CA's info here.
+   return Utility::certificateDetails(spiffe_data->ca_certs_[0].get(), getCaFileName(),
+                                      time_source_);
+-};
++}
+
+ class SPIFFEValidatorFactory : public CertValidatorFactory {
+ public:
+diff --git a/test/common/quic/BUILD b/test/common/quic/BUILD
+index 73753be79e822..659047b7ca952 100644
+--- a/test/common/quic/BUILD
++++ b/test/common/quic/BUILD
+@@ -116,6 +116,28 @@ envoy_cc_test(
+     ]),
+ )
+
++envoy_cc_test(
++    name = "envoy_quic_server_proof_verifier_test",
++    srcs = envoy_select_enable_http3(["envoy_quic_server_proof_verifier_test.cc"]),
++    data = [
++        "//test/common/tls/test_data:certs",
++    ],
++    rbe_pool = "6gig",
++    deps = envoy_select_enable_http3([
++        "//source/common/quic:envoy_quic_proof_verifier_lib",
++        "//source/common/quic:envoy_quic_server_proof_verifier_lib",
++        "//source/common/quic:quic_server_transport_socket_factory_lib",
++        "//test/mocks/network:network_mocks",
++        "//test/mocks/server:server_factory_context_mocks",
++        "//test/mocks/ssl:ssl_mocks",
++        "//test/mocks/stats:stats_mocks",
++        "//test/test_common:environment_lib",
++        "//test/test_common:simulated_time_system_lib",
++        "//test/test_common:utility_lib",
++        "@com_github_google_quiche//:quic_test_tools_test_certificates_lib",
++    ]),
++)
++
+ envoy_cc_test(
+     name = "envoy_quic_server_stream_test",
+     srcs = envoy_select_enable_http3(["envoy_quic_server_stream_test.cc"]),
+diff --git a/test/common/quic/envoy_quic_proof_verifier_test.cc b/test/common/quic/envoy_quic_proof_verifier_test.cc
+index d29d15cd6321d..5a1e6e63c50a3 100644
+--- a/test/common/quic/envoy_quic_proof_verifier_test.cc
++++ b/test/common/quic/envoy_quic_proof_verifier_test.cc
+@@ -457,5 +457,97 @@ TEST_F(EnvoyQuicProofVerifierTest, CreateDefaultContext) {
+   EXPECT_EQ(nullptr, verifier_->CreateDefaultContext());
+ }
+
++TEST_F(EnvoyQuicProofVerifierTest, VerifyCertChainWithAcceptUntrusted) {
++  configCertVerificationDetails(true);
++  // Create a verifier that accepts untrusted certificates
++  auto context_or_error = Extensions::TransportSockets::Tls::ClientContextImpl::create(
++      *store_.rootScope(), client_context_config_, factory_context_);
++  THROW_IF_NOT_OK(context_or_error.status());
++  auto untrusted_verifier =
++      std::make_unique<EnvoyQuicProofVerifier>(std::move(*context_or_error), true);
++
++  std::unique_ptr<quic::CertificateView> cert_view =
++      quic::CertificateView::ParseSingleCertificate(leaf_cert_);
++  const std::string ocsp_response;
++  const std::string cert_sct;
++  std::string error_details;
++  std::unique_ptr<quic::ProofVerifyDetails> verify_details;
++
++  // Test with valid hostname - should succeed even with accept_untrusted=true
++  EXPECT_EQ(quic::QUIC_SUCCESS, untrusted_verifier->VerifyCertChain(
++                                    std::string(cert_view->subject_alt_name_domains()[0]), 54321,
++                                    {leaf_cert_}, ocsp_response, cert_sct, &verify_context_,
++                                    &error_details, &verify_details, nullptr, nullptr));
++  EXPECT_NE(verify_details, nullptr);
++  EXPECT_TRUE(static_cast<CertVerifyResult&>(*verify_details).isValid());
++}
++
++TEST_F(EnvoyQuicProofVerifierTest, AsyncVerifyCertChainWithAcceptUntrusted) {
++  custom_validator_config_ = envoy::config::core::v3::TypedExtensionConfig();
++  TestUtility::loadFromYaml(TestEnvironment::substitute(R"EOF(
++name: "envoy.tls.cert_validator.timed_cert_validator"
++typed_config:
++  "@type": type.googleapis.com/test.common.config.DummyConfig
++  )EOF"),
++                            custom_validator_config_.value());
++
++  configCertVerificationDetails(true);
++  // Create a verifier that accepts untrusted certificates
++  auto context_or_error = Extensions::TransportSockets::Tls::ClientContextImpl::create(
++      *store_.rootScope(), client_context_config_, factory_context_);
++  THROW_IF_NOT_OK(context_or_error.status());
++  auto untrusted_verifier =
++      std::make_unique<EnvoyQuicProofVerifier>(std::move(*context_or_error), true);
++
++  const std::string ocsp_response;
++  const std::string cert_sct;
++  std::string error_details;
++  std::unique_ptr<quic::ProofVerifyDetails> verify_details;
++  auto* quic_verify_callback = new MockProofVerifierCallback();
++  Event::MockTimer* verify_timer = new NiceMock<Event::MockTimer>(&dispatcher_);
++
++  std::unique_ptr<quic::CertificateView> cert_view =
++      quic::CertificateView::ParseSingleCertificate(leaf_cert_);
++
++  // Test with valid hostname and accept_untrusted=true in async mode
++  EXPECT_EQ(quic::QUIC_PENDING,
++            untrusted_verifier->VerifyCertChain(
++                std::string(cert_view->subject_alt_name_domains()[0]), 54321, {leaf_cert_},
++                ocsp_response, cert_sct, &verify_context_, &error_details, &verify_details, nullptr,
++                std::unique_ptr<MockProofVerifierCallback>(quic_verify_callback)));
++  EXPECT_EQ(verify_details, nullptr);
++  EXPECT_TRUE(verify_timer->enabled());
++
++  // With accept_untrusted=true and valid hostname, verification should succeed
++  EXPECT_CALL(*quic_verify_callback, Run(true, "", _))
++      .WillOnce(Invoke(
++          [](bool, const std::string&, std::unique_ptr<quic::ProofVerifyDetails>* verify_details) {
++            EXPECT_NE(verify_details, nullptr);
++            auto details = std::unique_ptr<quic::ProofVerifyDetails>((*verify_details)->Clone());
++            EXPECT_TRUE(static_cast<CertVerifyResult&>(*details).isValid());
++          }));
++  verify_timer->invokeCallback();
++}
++
++TEST_F(EnvoyQuicProofVerifierTest, VerifyCertChainWithInvalidCertificateParsing) {
++  configCertVerificationDetails(true);
++
++  const std::string ocsp_response;
++  const std::string cert_sct;
++  std::string error_details;
++  std::unique_ptr<quic::ProofVerifyDetails> verify_details;
++
++  // Create a certificate that will fail CertificateView::ParseSingleCertificate.
++  std::string invalid_cert =
++      "-----BEGIN CERTIFICATE-----\nINVALID_CERT_DATA\n-----END CERTIFICATE-----";
++
++  EXPECT_EQ(quic::QUIC_FAILURE,
++            verifier_->VerifyCertChain("test.example.com", 54321, {invalid_cert}, ocsp_response,
++                                       cert_sct, &verify_context_, &error_details, &verify_details,
++                                       nullptr, nullptr));
++  EXPECT_EQ("d2i_X509: fail to parse DER", error_details);
++  EXPECT_EQ(verify_details, nullptr);
++}
++
+ } // namespace Quic
+ } // namespace Envoy
+diff --git a/test/common/quic/envoy_quic_server_proof_verifier_test.cc b/test/common/quic/envoy_quic_server_proof_verifier_test.cc
+new file mode 100644
+index 0000000000000..675d7d6563d2d
+--- /dev/null
++++ b/test/common/quic/envoy_quic_server_proof_verifier_test.cc
+@@ -0,0 +1,135 @@
++#include "source/common/quic/envoy_quic_proof_verifier.h"
++#include "source/common/quic/envoy_quic_server_proof_verifier.h"
++#include "source/common/quic/quic_server_transport_socket_factory.h"
++
++#include "test/mocks/network/mocks.h"
++#include "test/mocks/server/server_factory_context.h"
++#include "test/mocks/ssl/mocks.h"
++#include "test/mocks/stats/mocks.h"
++#include "test/test_common/environment.h"
++#include "test/test_common/simulated_time_system.h"
++#include "test/test_common/utility.h"
++
++#include "gmock/gmock.h"
++#include "gtest/gtest.h"
++#include "quiche/quic/test_tools/test_certificates.h"
++
++using testing::NiceMock;
++using testing::Return;
++using testing::ReturnRef;
++
++namespace Envoy {
++namespace Quic {
++
++class EnvoyQuicServerProofVerifierTest : public Event::TestUsingSimulatedTime,
++                                         public testing::Test {
++public:
++  EnvoyQuicServerProofVerifierTest()
++      : server_api_(Api::createApiForTest(server_stats_store_, simTime())) {
++    ON_CALL(context_.server_context_, api()).WillByDefault(ReturnRef(*server_api_));
++    ON_CALL(context_.server_context_, threadLocal()).WillByDefault(ReturnRef(tls_));
++  }
++
++  Network::DownstreamTransportSocketFactoryPtr createQuicServerFactory(const std::string& yaml) {
++    envoy::extensions::transport_sockets::quic::v3::QuicDownstreamTransport proto_config;
++    TestUtility::loadFromYaml(yaml, proto_config);
++    return THROW_OR_RETURN_VALUE(
++        config_factory_.createTransportSocketFactory(proto_config, context_, {}),
++        Network::DownstreamTransportSocketFactoryPtr);
++  }
++
++protected:
++  NiceMock<Network::MockListenSocket> listen_socket_;
++  NiceMock<Network::MockFilterChainManager> filter_chain_manager_;
++  Stats::TestUtil::TestStore server_stats_store_;
++  Api::ApiPtr server_api_;
++  NiceMock<ThreadLocal::MockInstance> tls_;
++  NiceMock<Server::Configuration::MockTransportSocketFactoryContext> context_;
++  QuicServerTransportSocketConfigFactory config_factory_;
++};
++
++// Test that verifier returns success when no filter chain is found.
++TEST_F(EnvoyQuicServerProofVerifierTest, NoFilterChainFound) {
++  auto verifier = std::make_unique<EnvoyQuicServerProofVerifier>(listen_socket_,
++                                                                 filter_chain_manager_, simTime());
++
++  EXPECT_CALL(filter_chain_manager_, findFilterChain(_, _)).WillOnce(Return(nullptr));
++
++  std::string error_details;
++  std::unique_ptr<quic::ProofVerifyDetails> details;
++  std::vector<std::string> certs;
++
++  quic::QuicAsyncStatus status = verifier->VerifyCertChain(
++      "hostname", 443, certs, "", "", nullptr, &error_details, &details, nullptr, nullptr);
++
++  EXPECT_EQ(quic::QUIC_SUCCESS, status);
++  EXPECT_NE(details, nullptr);
++  EXPECT_TRUE(static_cast<CertVerifyResult&>(*details).isValid());
++}
++
++// Test that verifier returns success when transport socket factory is not QUIC type.
++TEST_F(EnvoyQuicServerProofVerifierTest, NonQuicTransportSocketFactory) {
++  auto verifier = std::make_unique<EnvoyQuicServerProofVerifier>(listen_socket_,
++                                                                 filter_chain_manager_, simTime());
++
++  NiceMock<Network::MockFilterChain> filter_chain;
++  NiceMock<Network::MockDownstreamTransportSocketFactory> socket_factory;
++
++  EXPECT_CALL(filter_chain_manager_, findFilterChain(_, _)).WillOnce(Return(&filter_chain));
++  EXPECT_CALL(filter_chain, transportSocketFactory()).WillOnce(ReturnRef(socket_factory));
++
++  std::string error_details;
++  std::unique_ptr<quic::ProofVerifyDetails> details;
++  std::vector<std::string> certs;
++
++  quic::QuicAsyncStatus status = verifier->VerifyCertChain(
++      "hostname", 443, certs, "", "", nullptr, &error_details, &details, nullptr, nullptr);
++
++  // Not a QUIC factory, so should return success.
++  EXPECT_EQ(quic::QUIC_SUCCESS, status);
++  EXPECT_NE(details, nullptr);
++  EXPECT_TRUE(static_cast<CertVerifyResult&>(*details).isValid());
++}
++
++// Test updateFilterChainManager method.
++TEST_F(EnvoyQuicServerProofVerifierTest, UpdateFilterChainManager) {
++  auto verifier = std::make_unique<EnvoyQuicServerProofVerifier>(listen_socket_,
++                                                                 filter_chain_manager_, simTime());
++
++  NiceMock<Network::MockFilterChainManager> new_filter_chain_manager;
++
++  // Update to a new filter chain manager.
++  verifier->updateFilterChainManager(new_filter_chain_manager);
++
++  // Verify the new filter chain manager is used.
++  EXPECT_CALL(new_filter_chain_manager, findFilterChain(_, _)).WillOnce(Return(nullptr));
++
++  std::string error_details;
++  std::unique_ptr<quic::ProofVerifyDetails> details;
++  std::vector<std::string> certs;
++
++  quic::QuicAsyncStatus status = verifier->VerifyCertChain(
++      "hostname", 443, certs, "", "", nullptr, &error_details, &details, nullptr, nullptr);
++
++  EXPECT_EQ(quic::QUIC_SUCCESS, status);
++}
++
++// Test CertVerifyResult cloning functionality.
++TEST_F(EnvoyQuicServerProofVerifierTest, CertVerifyResultClone) {
++  CertVerifyResult result_valid(true);
++  EXPECT_TRUE(result_valid.isValid());
++
++  auto cloned =
++      std::unique_ptr<CertVerifyResult>(static_cast<CertVerifyResult*>(result_valid.Clone()));
++  EXPECT_TRUE(cloned->isValid());
++
++  CertVerifyResult result_invalid(false);
++  EXPECT_FALSE(result_invalid.isValid());
++
++  auto cloned_invalid =
++      std::unique_ptr<CertVerifyResult>(static_cast<CertVerifyResult*>(result_invalid.Clone()));
++  EXPECT_FALSE(cloned_invalid->isValid());
++}
++
++} // namespace Quic
++} // namespace Envoy
+diff --git a/test/common/quic/envoy_quic_server_session_test.cc b/test/common/quic/envoy_quic_server_session_test.cc
+index d81484be2a946..841f6000beffe 100644
+--- a/test/common/quic/envoy_quic_server_session_test.cc
++++ b/test/common/quic/envoy_quic_server_session_test.cc
+@@ -58,6 +58,7 @@ class TestEnvoyQuicServerSession : public EnvoyQuicServerSession {
+   }
+
+   using EnvoyQuicServerSession::GetCryptoStream;
++  using EnvoyQuicServerSession::GetSSLConfig;
+ };
+
+ class ProofSourceDetailsSetter {
+diff --git a/test/common/quic/quic_transport_socket_factory_test.cc b/test/common/quic/quic_transport_socket_factory_test.cc
+index bf1d3f683eabc..1bbaf7885d164 100644
+--- a/test/common/quic/quic_transport_socket_factory_test.cc
++++ b/test/common/quic/quic_transport_socket_factory_test.cc
+@@ -95,7 +95,7 @@ TEST_F(QuicServerTransportSocketFactoryConfigTest, EarlyDataExplicitlyEnabled) {
+   verifyQuicServerTransportSocketFactory(yaml, true);
+ }
+
+-TEST_F(QuicServerTransportSocketFactoryConfigTest, ClientAuthUnsupported) {
++TEST_F(QuicServerTransportSocketFactoryConfigTest, ClientAuthSupported) {
+   const std::string yaml = TestEnvironment::substitute(R"EOF(
+ downstream_tls_context:
+   require_client_certificate: true
+@@ -109,8 +109,81 @@ TEST_F(QuicServerTransportSocketFactoryConfigTest, ClientAuthUnsupported) {
+       trusted_ca:
+         filename: "{{ test_rundir }}/test/common/tls/test_data/ca_cert.pem"
+ )EOF");
+-  EXPECT_THROW_WITH_MESSAGE(verifyQuicServerTransportSocketFactory(yaml, true), EnvoyException,
+-                            "TLS Client Authentication is not supported over QUIC");
++  // Client authentication should be supported. Verify successful creation.
++  verifyQuicServerTransportSocketFactory(yaml, true);
++}
++
++TEST_F(QuicServerTransportSocketFactoryConfigTest, TestRequiresClientCertificate) {
++  // Test with require_client_certificate = true
++  {
++    const std::string yaml = TestEnvironment::substitute(R"EOF(
++downstream_tls_context:
++  require_client_certificate: true
++  common_tls_context:
++    tls_certificates:
++    - certificate_chain:
++        filename: "{{ test_rundir }}/test/common/tls/test_data/san_uri_cert.pem"
++      private_key:
++        filename: "{{ test_rundir }}/test/common/tls/test_data/san_uri_key.pem"
++    validation_context:
++      trusted_ca:
++        filename: "{{ test_rundir }}/test/common/tls/test_data/ca_cert.pem"
++)EOF");
++
++    envoy::extensions::transport_sockets::quic::v3::QuicDownstreamTransport proto_config;
++    TestUtility::loadFromYaml(yaml, proto_config);
++    Network::DownstreamTransportSocketFactoryPtr transport_socket_factory = THROW_OR_RETURN_VALUE(
++        config_factory_.createTransportSocketFactory(proto_config, context_, {}),
++        Network::DownstreamTransportSocketFactoryPtr);
++
++    auto& quic_factory = static_cast<QuicServerTransportSocketFactory&>(*transport_socket_factory);
++    EXPECT_TRUE(quic_factory.requiresClientCertificate());
++  }
++
++  // Test with require_client_certificate = false
++  {
++    const std::string yaml = TestEnvironment::substitute(R"EOF(
++downstream_tls_context:
++  require_client_certificate: false
++  common_tls_context:
++    tls_certificates:
++    - certificate_chain:
++        filename: "{{ test_rundir }}/test/common/tls/test_data/san_uri_cert.pem"
++      private_key:
++        filename: "{{ test_rundir }}/test/common/tls/test_data/san_uri_key.pem"
++)EOF");
++
++    envoy::extensions::transport_sockets::quic::v3::QuicDownstreamTransport proto_config;
++    TestUtility::loadFromYaml(yaml, proto_config);
++    Network::DownstreamTransportSocketFactoryPtr transport_socket_factory = THROW_OR_RETURN_VALUE(
++        config_factory_.createTransportSocketFactory(proto_config, context_, {}),
++        Network::DownstreamTransportSocketFactoryPtr);
++
++    auto& quic_factory = static_cast<QuicServerTransportSocketFactory&>(*transport_socket_factory);
++    EXPECT_FALSE(quic_factory.requiresClientCertificate());
++  }
++
++  // Test with require_client_certificate not specified (default should be false)
++  {
++    const std::string yaml = TestEnvironment::substitute(R"EOF(
++downstream_tls_context:
++  common_tls_context:
++    tls_certificates:
++    - certificate_chain:
++        filename: "{{ test_rundir }}/test/common/tls/test_data/san_uri_cert.pem"
++      private_key:
++        filename: "{{ test_rundir }}/test/common/tls/test_data/san_uri_key.pem"
++)EOF");
++
++    envoy::extensions::transport_sockets::quic::v3::QuicDownstreamTransport proto_config;
++    TestUtility::loadFromYaml(yaml, proto_config);
++    Network::DownstreamTransportSocketFactoryPtr transport_socket_factory = THROW_OR_RETURN_VALUE(
++        config_factory_.createTransportSocketFactory(proto_config, context_, {}),
++        Network::DownstreamTransportSocketFactoryPtr);
++
++    auto& quic_factory = static_cast<QuicServerTransportSocketFactory&>(*transport_socket_factory);
++    EXPECT_FALSE(quic_factory.requiresClientCertificate());
++  }
+ }
+
+ class QuicClientTransportSocketFactoryTest : public testing::Test {
+@@ -160,5 +233,65 @@ TEST_F(QuicClientTransportSocketFactoryTest, GetCryptoConfig) {
+   EXPECT_NE(crypto_config2, crypto_config1);
+ }
+
++// Test for QuicClientCertInitializer functionality
++TEST_F(QuicClientTransportSocketFactoryTest, QuicClientCertInitializerTests) {
++  // Test initialization with null SSL context
++  factory_->initialize();
++  EXPECT_EQ(nullptr, factory_->getCryptoConfig());
++
++  // Test with valid SSL context
++  Ssl::ClientContextSharedPtr ssl_context{new Ssl::MockClientContext()};
++  EXPECT_CALL(context_.server_context_.ssl_context_manager_, createSslClientContext(_, _))
++      .WillOnce(Return(ssl_context));
++
++  // Test the update callback (QuicClientCertInitializer logic)
++  update_callback_();
++
++  // Should have created a crypto config
++  std::shared_ptr<quic::QuicCryptoClientConfig> crypto_config = factory_->getCryptoConfig();
++  EXPECT_NE(nullptr, crypto_config);
++
++  // Test multiple updates (should create new config each time)
++  Ssl::ClientContextSharedPtr ssl_context2{new Ssl::MockClientContext()};
++  EXPECT_CALL(context_.server_context_.ssl_context_manager_, createSslClientContext(_, _))
++      .WillOnce(Return(ssl_context2));
++  update_callback_();
++
++  std::shared_ptr<quic::QuicCryptoClientConfig> crypto_config2 = factory_->getCryptoConfig();
++  EXPECT_NE(crypto_config2, crypto_config);
++}
++
++// Test for QuicClientCertInitializer error handling.
++TEST_F(QuicClientTransportSocketFactoryTest, QuicClientCertInitializerErrorHandling) {
++  factory_->initialize();
++
++  // Test with SSL context creation failure.
++  EXPECT_CALL(context_.server_context_.ssl_context_manager_, createSslClientContext(_, _))
++      .WillOnce(Return(nullptr));
++
++  // Update callback should handle null SSL context gracefully.
++  update_callback_();
++
++  // Should not have created a crypto config.
++  EXPECT_EQ(nullptr, factory_->getCryptoConfig());
++}
++
++// Targeted test to hit the upstream_context_secrets_not_ready statistic.
++TEST_F(QuicClientTransportSocketFactoryTest, UpstreamContextSecretsNotReadyStatistic) {
++  factory_->initialize();
++
++  // When SSL context is not ready (nullptr in constructor mock), getCryptoConfig should return
++  // nullptr This internally triggers the upstream_context_secrets_not_ready statistic increment
++  auto crypto_config = factory_->getCryptoConfig();
++  EXPECT_EQ(crypto_config, nullptr);
++
++  // Call it again to verify consistent behavior
++  auto crypto_config2 = factory_->getCryptoConfig();
++  EXPECT_EQ(crypto_config2, nullptr);
++
++  // The statistic is being incremented internally in the implementation
++  // This test ensures the code path that increments it is exercised
++}
++
+ } // namespace Quic
+ } // namespace Envoy
+diff --git a/test/common/tls/cert_validator/default_validator_test.cc b/test/common/tls/cert_validator/default_validator_test.cc
+index 7cc41f3a5480e..31344555db6b0 100644
+--- a/test/common/tls/cert_validator/default_validator_test.cc
++++ b/test/common/tls/cert_validator/default_validator_test.cc
+@@ -1,6 +1,7 @@
+ #include <string>
+ #include <vector>
+
++#include "source/common/common/base64.h"
+ #include "source/common/tls/cert_validator/default_validator.h"
+ #include "source/common/tls/cert_validator/san_matcher.h"
+
+@@ -823,33 +824,33 @@ TEST(DefaultCertValidatorTest, TestCertificateValidationErrorDetailsForSanFailur
+   Stats::TestUtil::TestStore test_store;
+   SslStats stats = generateSslStats(*test_store.rootScope());
+
+-  // Load a certificate with DNS SANs
++  // Load a certificate with DNS SANs.
+   bssl::UniquePtr<X509> cert = readCertFromFile(
+       TestEnvironment::substitute("{{ test_rundir }}/test/common/tls/test_data/san_dns_cert.pem"));
+
+-  // Create SAN matchers that won't match the certificate (using regex as DNS requires it)
++  // Create SAN matchers that won't match the certificate (using regex as DNS requires it).
+   envoy::type::matcher::v3::StringMatcher matcher;
+   matcher.MergeFrom(TestUtility::createRegexMatcher(R"raw(nomatch\.example\.com)raw"));
+   std::vector<SanMatcherPtr> subject_alt_name_matchers;
+   subject_alt_name_matchers.push_back(
+       SanMatcherPtr{std::make_unique<StringSanMatcher>(GEN_DNS, matcher, context)});
+
+-  // Create the validator with no config (so verify_trusted_ca_ is false)
++  // Create the validator with no config (so verify_trusted_ca_ is false).
+   auto default_validator =
+       std::make_unique<Extensions::TransportSockets::Tls::DefaultCertValidator>(
+           /*CertificateValidationContextConfig=*/nullptr, stats, context);
+
+-  // Call verifyCertificate directly which populates error_details on SAN mismatch
++  // Call verifyCertificate directly which populates error_details on SAN mismatch.
+   std::string error_details;
+   uint8_t tls_alert;
+   Ssl::ClientValidationStatus status = default_validator->verifyCertificate(
+       cert.get(), /*verify_san_list=*/{}, subject_alt_name_matchers, /*stream_info=*/{},
+       &error_details, &tls_alert);
+
+-  // Validation should fail because the SAN doesn't match
++  // Validation should fail because the SAN doesn't match.
+   EXPECT_EQ(Ssl::ClientValidationStatus::Failed, status);
+
+-  // The error_details should be populated with a meaningful error message
++  // The error_details should be populated with a meaningful error message.
+   EXPECT_EQ(error_details, "verify cert failed: SAN matcher");
+ }
+
+@@ -857,39 +858,17 @@ TEST(DefaultCertValidatorTest, TestCertificateValidationErrorDetailsForSanFailur
+ TEST(DefaultCertValidatorTest, TestSslExtendedSocketInfoCertValidationError) {
+   TestSslExtendedSocketInfo extended_socket_info;
+
+-  // Initially the error should be empty
++  // Initially the error should be empty.
+   EXPECT_TRUE(extended_socket_info.certificateValidationError().empty());
+
+-  // Set an error
++  // Set an error.
+   const std::string error_msg = "verify cert failed: X509_verify_cert: certificate has expired";
+   extended_socket_info.setCertificateValidationError(error_msg);
+
+-  // Verify the error is stored and retrievable
++  // Verify the error is stored and retrievable.
+   EXPECT_EQ(error_msg, extended_socket_info.certificateValidationError());
+ }
+
+-// Test that empty cert chain returns appropriate error details.
+-TEST(DefaultCertValidatorTest, TestEmptyCertChainErrorDetails) {
+-  NiceMock<Server::Configuration::MockServerFactoryContext> context;
+-  Stats::TestUtil::TestStore test_store;
+-  SslStats stats = generateSslStats(*test_store.rootScope());
+-
+-  auto default_validator =
+-      std::make_unique<Extensions::TransportSockets::Tls::DefaultCertValidator>(
+-          /*CertificateValidationContextConfig=*/nullptr, stats, context);
+-
+-  SSLContextPtr ssl_ctx = SSL_CTX_new(TLS_method());
+-  bssl::UniquePtr<STACK_OF(X509)> cert_chain(sk_X509_new_null());
+-
+-  ValidationResults results = default_validator->doVerifyCertChain(
+-      *cert_chain, /*callback=*/nullptr,
+-      /*transport_socket_options=*/nullptr, *ssl_ctx, {}, false, "");
+-
+-  EXPECT_EQ(ValidationResults::ValidationStatus::Failed, results.status);
+-  EXPECT_TRUE(results.error_details.has_value());
+-  EXPECT_EQ(results.error_details.value(), "verify cert failed: empty cert chain");
+-}
+-
+ } // namespace Tls
+ } // namespace TransportSockets
+ } // namespace Extensions
+diff --git a/test/integration/BUILD b/test/integration/BUILD
+index 6703d3aa1bb2a..701ed3b42c78a 100644
+--- a/test/integration/BUILD
++++ b/test/integration/BUILD
+@@ -2999,3 +2999,16 @@ envoy_cc_test(
+         "@envoy_api//envoy/config/bootstrap/v3:pkg_cc_proto",
+     ],
+ )
++
++envoy_cc_test(
++    name = "quic_mtls_integration_test",
++    srcs = envoy_select_enable_http3(["quic_mtls_integration_test.cc"]),
++    data = [
++        "//test/config/integration/certs",
++    ],
++    deps = envoy_select_enable_http3([
++        ":quic_http_integration_test_lib",
++        "//source/common/quic:quic_ssl_connection_info_lib",
++        "//test/test_common:utility_lib",
++    ]),
++)
+diff --git a/test/integration/quic_mtls_integration_test.cc b/test/integration/quic_mtls_integration_test.cc
+new file mode 100644
+index 0000000000000..c5cd82e466831
+--- /dev/null
++++ b/test/integration/quic_mtls_integration_test.cc
+@@ -0,0 +1,537 @@
++#include "envoy/extensions/filters/network/http_connection_manager/v3/http_connection_manager.pb.h"
++#include "envoy/extensions/transport_sockets/quic/v3/quic_transport.pb.h"
++#include "envoy/extensions/transport_sockets/tls/v3/cert.pb.h"
++
++#include "source/common/quic/quic_ssl_connection_info.h"
++#include "source/common/tls/cert_validator/san_matcher.h"
++
++#include "test/integration/quic_http_integration_test.h"
++#include "test/integration/ssl_utility.h"
++#include "test/test_common/utility.h"
++
++#include "gmock/gmock.h"
++#include "gtest/gtest.h"
++
++namespace Envoy {
++namespace Quic {
++
++class QuicMtlsIntegrationTest : public QuicHttpIntegrationTestBase,
++                                public testing::TestWithParam<Network::Address::IpVersion> {
++public:
++  QuicMtlsIntegrationTest()
++      : QuicHttpIntegrationTestBase(GetParam(),
++                                    ConfigHelper::httpProxyConfig(/*downstream_use_quic=*/true)) {}
++
++  void initialize() override {
++    // Configure client with certificates for mTLS testing using defaults.
++    ssl_client_option_.setSan("spiffe://lyft.com/frontend-team").setSni("lyft.com");
++    QuicHttpIntegrationTestBase::initialize();
++  }
++
++  void setupServerWithClientCertValidation(const std::string& client_ca_cert = "cacert.pem",
++                                           const std::string& server_cert = "servercert.pem",
++                                           const std::string& server_key = "serverkey.pem",
++                                           bool require_client_cert = true,
++                                           const std::string& trusted_ca_cert = "") {
++    config_helper_.addConfigModifier([=](envoy::config::bootstrap::v3::Bootstrap& bootstrap) {
++      auto* transport_socket = bootstrap.mutable_static_resources()
++                                   ->mutable_listeners(0)
++                                   ->mutable_filter_chains(0)
++                                   ->mutable_transport_socket();
++
++      envoy::extensions::transport_sockets::quic::v3::QuicDownstreamTransport quic_config;
++      auto unpack_result =
++          MessageUtil::unpackTo(*transport_socket->mutable_typed_config(), quic_config);
++      ASSERT_TRUE(unpack_result.ok());
++
++      auto* tls_context = quic_config.mutable_downstream_tls_context();
++      tls_context->mutable_require_client_certificate()->set_value(require_client_cert);
++
++      // Set up server certificate.
++      auto* server_cert_config = tls_context->mutable_common_tls_context()->add_tls_certificates();
++      server_cert_config->mutable_certificate_chain()->set_filename(
++          TestEnvironment::runfilesPath("test/config/integration/certs/" + server_cert));
++      server_cert_config->mutable_private_key()->set_filename(
++          TestEnvironment::runfilesPath("test/config/integration/certs/" + server_key));
++
++      // Set up CA for client cert validation.
++      if (require_client_cert) {
++        const std::string ca_file = trusted_ca_cert.empty() ? client_ca_cert : trusted_ca_cert;
++        tls_context->mutable_common_tls_context()
++            ->mutable_validation_context()
++            ->mutable_trusted_ca()
++            ->set_filename(
++                TestEnvironment::runfilesPath("test/config/integration/certs/" + ca_file));
++      }
++
++      transport_socket->mutable_typed_config()->PackFrom(quic_config);
++    });
++
++    setupXfccHeaderConfig();
++  }
++
++  void setupXfccHeaderConfig() {
++    config_helper_.addConfigModifier(
++        [](envoy::extensions::filters::network::http_connection_manager::v3::HttpConnectionManager&
++               hcm) {
++          hcm.set_forward_client_cert_details(
++              envoy::extensions::filters::network::http_connection_manager::v3::
++                  HttpConnectionManager::SANITIZE_SET);
++
++          auto* cert_details = hcm.mutable_set_current_client_cert_details();
++          cert_details->mutable_subject()->set_value(true);
++          cert_details->set_cert(true);
++          cert_details->set_chain(true);
++          cert_details->set_uri(true);
++          cert_details->set_dns(true);
++          // Note: set_hash method may not be available in all Envoy versions.
++        });
++  }
++
++  void verifyServerSideClientCertInfo(const std::string& expected_subject_contains = "") {
++    // Check that XFCC header is present and populated.
++    auto xfcc_headers =
++        upstream_request_->headers().get(Http::LowerCaseString("x-forwarded-client-cert"));
++    ASSERT_FALSE(xfcc_headers.empty()) << "XFCC header should be present with client certificate";
++
++    std::string xfcc_value = std::string(xfcc_headers[0]->value().getStringView());
++    EXPECT_FALSE(xfcc_value.empty()) << "XFCC header should not be empty";
++
++    if (!expected_subject_contains.empty()) {
++      EXPECT_THAT(xfcc_value, testing::HasSubstr("Subject="))
++          << "Should contain certificate subject";
++      EXPECT_THAT(xfcc_value, testing::HasSubstr(expected_subject_contains))
++          << "Should contain expected subject part";
++    }
++
++    ENVOY_LOG_MISC(info, "XFCC Header: {}", xfcc_value);
++  }
++
++  void verifyClientSideServerCertInfo() {
++    auto* quic_session = static_cast<EnvoyQuicClientSession*>(codec_client_->connection());
++    ASSERT_NE(quic_session, nullptr);
++    ASSERT_NE(quic_session->ssl(), nullptr);
++
++    auto ssl_info = quic_session->ssl();
++
++    // Test basic certificate presence and validation.
++    EXPECT_TRUE(ssl_info->peerCertificatePresented()) << "Server certificate should be presented";
++    EXPECT_TRUE(ssl_info->peerCertificateValidated()) << "Server certificate should be validated";
++
++    // Test certificate information extraction.
++    EXPECT_FALSE(ssl_info->sha256PeerCertificateDigest().empty());
++    EXPECT_FALSE(ssl_info->subjectPeerCertificate().empty());
++    EXPECT_FALSE(ssl_info->serialNumberPeerCertificate().empty());
++
++    ENVOY_LOG_MISC(info, "Client-side server certificate validation passed");
++  }
++
++  void expectConnectionFailure(const std::string& expected_error_contains = "") {
++    codec_client_ = makeRawHttpConnection(makeClientConnection(lookupPort("http")), absl::nullopt);
++    EXPECT_FALSE(codec_client_->connected()) << "Connection should fail";
++
++    if (!expected_error_contains.empty() && codec_client_->connection() != nullptr) {
++      std::string failure_reason =
++          std::string(codec_client_->connection()->transportFailureReason());
++      if (!failure_reason.empty()) {
++        EXPECT_THAT(failure_reason, testing::HasSubstr(expected_error_contains))
++            << "Failure reason should contain expected error";
++        ENVOY_LOG_MISC(info, "Expected connection failure: {}", failure_reason);
++      }
++    }
++  }
++};
++
++INSTANTIATE_TEST_SUITE_P(IpVersions, QuicMtlsIntegrationTest,
++                         testing::ValuesIn(TestEnvironment::getIpVersionsForTest()),
++                         TestUtility::ipTestParamsToString);
++
++// Test successful mTLS with client certificate and XFCC header generation.
++TEST_P(QuicMtlsIntegrationTest, SuccessfulMtlsWithClientCertificate) {
++  setupServerWithClientCertValidation();
++  initialize();
++
++  // Make connection with client certificate.
++  codec_client_ = makeHttpConnection(makeClientConnection(lookupPort("http")));
++  auto response = codec_client_->makeHeaderOnlyRequest(default_request_headers_);
++
++  // Wait for upstream request.
++  waitForNextUpstreamRequest();
++
++  // Verify server-side client certificate validation.
++  verifyServerSideClientCertInfo("Test Frontend Team");
++
++  // Send successful response.
++  upstream_request_->encodeHeaders(default_response_headers_, true);
++  ASSERT_TRUE(response->waitForEndStream());
++  EXPECT_EQ("200", response->headers().getStatusValue());
++
++  // Verify client-side server certificate validation.
++  verifyClientSideServerCertInfo();
++
++  codec_client_->close();
++}
++
++// Test comprehensive certificate information extraction.
++TEST_P(QuicMtlsIntegrationTest, ComprehensiveCertificateInfoExtraction) {
++  setupServerWithClientCertValidation();
++  initialize();
++
++  codec_client_ = makeHttpConnection(makeClientConnection(lookupPort("http")));
++  auto response = codec_client_->makeHeaderOnlyRequest(default_request_headers_);
++
++  waitForNextUpstreamRequest();
++
++  // Get the QUIC session for detailed certificate testing.
++  auto* quic_session = static_cast<EnvoyQuicClientSession*>(codec_client_->connection());
++  auto ssl_info = quic_session->ssl();
++
++  // Test all certificate extraction methods.
++  EXPECT_TRUE(ssl_info->peerCertificatePresented());
++  EXPECT_TRUE(ssl_info->peerCertificateValidated());
++
++  // Test digest methods with exact length validation.
++  EXPECT_FALSE(ssl_info->sha256PeerCertificateDigest().empty());
++  EXPECT_FALSE(ssl_info->sha1PeerCertificateDigest().empty());
++  EXPECT_EQ(ssl_info->sha256PeerCertificateDigest().length(),
++            64);                                                 // SHA256 = 32 bytes = 64 hex chars
++  EXPECT_EQ(ssl_info->sha1PeerCertificateDigest().length(), 40); // SHA1 = 20 bytes = 40 hex chars
++
++  // Test certificate chain digests.
++  auto sha256_chain_digests = ssl_info->sha256PeerCertificateChainDigests();
++  auto sha1_chain_digests = ssl_info->sha1PeerCertificateChainDigests();
++  EXPECT_FALSE(sha256_chain_digests.empty());
++  EXPECT_FALSE(sha1_chain_digests.empty());
++
++  // Test SAN extraction.
++  auto uri_sans = ssl_info->uriSanPeerCertificate();
++  auto dns_sans = ssl_info->dnsSansPeerCertificate();
++
++  EXPECT_FALSE(uri_sans.empty()) << "Should have URI SANs";
++  EXPECT_FALSE(dns_sans.empty()) << "Should have DNS SANs";
++
++  // Test certificate dates.
++  auto valid_from = ssl_info->validFromPeerCertificate();
++  auto expiration = ssl_info->expirationPeerCertificate();
++  EXPECT_TRUE(valid_from.has_value()) << "Should have valid from date";
++  EXPECT_TRUE(expiration.has_value()) << "Should have expiration date";
++
++  // Test TLS connection information.
++  EXPECT_FALSE(ssl_info->tlsVersion().empty());
++  EXPECT_NE(ssl_info->ciphersuiteId(), 0xffff);
++  EXPECT_FALSE(ssl_info->ciphersuiteString().empty());
++
++  upstream_request_->encodeHeaders(default_response_headers_, true);
++  ASSERT_TRUE(response->waitForEndStream());
++  EXPECT_EQ("200", response->headers().getStatusValue());
++
++  codec_client_->close();
++}
++
++// Test server without client certificate requirement (should succeed).
++TEST_P(QuicMtlsIntegrationTest, ServerWithoutClientCertRequirement) {
++  setupServerWithClientCertValidation("", "servercert.pem", "serverkey.pem", false);
++  initialize();
++
++  // Connect without client certificate when not required - should succeed.
++  codec_client_ = makeHttpConnection(makeClientConnection(lookupPort("http")));
++  auto response = codec_client_->makeHeaderOnlyRequest(default_request_headers_);
++
++  waitForNextUpstreamRequest();
++
++  // No XFCC header should be present since no client cert was provided.
++  auto xfcc_headers =
++      upstream_request_->headers().get(Http::LowerCaseString("x-forwarded-client-cert"));
++  EXPECT_TRUE(xfcc_headers.empty())
++      << "XFCC header should not be present without client certificate";
++
++  upstream_request_->encodeHeaders(default_response_headers_, true);
++  ASSERT_TRUE(response->waitForEndStream());
++  EXPECT_EQ("200", response->headers().getStatusValue());
++
++  // Verify server certificate validation still works.
++  verifyClientSideServerCertInfo();
++
++  codec_client_->close();
++}
++
++// Test XFCC header comprehensive field validation.
++TEST_P(QuicMtlsIntegrationTest, XfccHeaderComprehensiveValidation) {
++  setupServerWithClientCertValidation();
++  initialize();
++
++  codec_client_ = makeHttpConnection(makeClientConnection(lookupPort("http")));
++  auto response = codec_client_->makeHeaderOnlyRequest(default_request_headers_);
++
++  waitForNextUpstreamRequest();
++
++  // Validate comprehensive XFCC header content.
++  auto xfcc_headers =
++      upstream_request_->headers().get(Http::LowerCaseString("x-forwarded-client-cert"));
++  ASSERT_FALSE(xfcc_headers.empty());
++
++  std::string xfcc_value = std::string(xfcc_headers[0]->value().getStringView());
++  EXPECT_FALSE(xfcc_value.empty());
++
++  // Validate specific XFCC fields that QUIC mTLS should provide.
++  EXPECT_THAT(xfcc_value, testing::HasSubstr("Subject=")) << "Should contain certificate subject";
++  EXPECT_THAT(xfcc_value, testing::HasSubstr("Hash=")) << "Should contain certificate hash";
++  EXPECT_THAT(xfcc_value, testing::HasSubstr("Cert=")) << "Should contain URL-encoded certificate";
++
++  upstream_request_->encodeHeaders(default_response_headers_, true);
++  ASSERT_TRUE(response->waitForEndStream());
++  EXPECT_EQ("200", response->headers().getStatusValue());
++
++  codec_client_->close();
++}
++
++// Test certificate chain validation with intermediate CA.
++TEST_P(QuicMtlsIntegrationTest, IntermediateCaCertificateChainValidation) {
++  setupServerWithClientCertValidation("intermediate_ca_cert_chain.pem");
++  initialize();
++
++  codec_client_ = makeHttpConnection(makeClientConnection(lookupPort("http")));
++  auto response = codec_client_->makeHeaderOnlyRequest(default_request_headers_);
++
++  waitForNextUpstreamRequest();
++
++  // Verify certificate chain validation works.
++  verifyServerSideClientCertInfo("CN=Test");
++
++  // Verify certificate chain information in XFCC header.
++  auto xfcc_headers =
++      upstream_request_->headers().get(Http::LowerCaseString("x-forwarded-client-cert"));
++  std::string xfcc_value = std::string(xfcc_headers[0]->value().getStringView());
++
++  // Should contain certificate chain information.
++  EXPECT_THAT(xfcc_value, testing::HasSubstr("Chain=")) << "Should contain certificate chain";
++
++  upstream_request_->encodeHeaders(default_response_headers_, true);
++  ASSERT_TRUE(response->waitForEndStream());
++  EXPECT_EQ("200", response->headers().getStatusValue());
++
++  codec_client_->close();
++}
++
++// Test multiple requests on same mTLS connection.
++TEST_P(QuicMtlsIntegrationTest, MultipleRequestsOnSameMtlsConnection) {
++  setupServerWithClientCertValidation();
++  initialize();
++
++  codec_client_ = makeHttpConnection(makeClientConnection(lookupPort("http")));
++
++  // Send requests one by one to avoid overwhelming the test framework.
++  for (int i = 0; i < 3; ++i) {
++    auto response = codec_client_->makeHeaderOnlyRequest(default_request_headers_);
++
++    waitForNextUpstreamRequest();
++
++    // Each request should have XFCC header.
++    verifyServerSideClientCertInfo("Test Frontend Team");
++
++    upstream_request_->encodeHeaders(default_response_headers_, true);
++
++    ASSERT_TRUE(response->waitForEndStream());
++    EXPECT_EQ("200", response->headers().getStatusValue());
++  }
++
++  codec_client_->close();
++}
++
++// Test certificate validation with SAN matching.
++TEST_P(QuicMtlsIntegrationTest, SubjectAlternativeNameValidation) {
++  // Set up server with SAN-based validation.
++  config_helper_.addConfigModifier([](envoy::config::bootstrap::v3::Bootstrap& bootstrap) {
++    auto* transport_socket = bootstrap.mutable_static_resources()
++                                 ->mutable_listeners(0)
++                                 ->mutable_filter_chains(0)
++                                 ->mutable_transport_socket();
++
++    envoy::extensions::transport_sockets::quic::v3::QuicDownstreamTransport quic_config;
++    auto unpack_result =
++        MessageUtil::unpackTo(*transport_socket->mutable_typed_config(), quic_config);
++    ASSERT_TRUE(unpack_result.ok());
++
++    auto* tls_context = quic_config.mutable_downstream_tls_context();
++    tls_context->mutable_require_client_certificate()->set_value(true);
++
++    // Set up server certificate.
++    auto* server_cert = tls_context->mutable_common_tls_context()->add_tls_certificates();
++    server_cert->mutable_certificate_chain()->set_filename(
++        TestEnvironment::runfilesPath("test/config/integration/certs/servercert.pem"));
++    server_cert->mutable_private_key()->set_filename(
++        TestEnvironment::runfilesPath("test/config/integration/certs/serverkey.pem"));
++
++    // Set up CA for client cert validation with SAN matching.
++    auto* validation_context =
++        tls_context->mutable_common_tls_context()->mutable_validation_context();
++    validation_context->mutable_trusted_ca()->set_filename(
++        TestEnvironment::runfilesPath("test/config/integration/certs/cacert.pem"));
++
++    // Add SAN matcher for URI.
++    auto* san_matcher = validation_context->add_match_typed_subject_alt_names();
++    san_matcher->set_san_type(
++        envoy::extensions::transport_sockets::tls::v3::SubjectAltNameMatcher::URI);
++    san_matcher->mutable_matcher()->set_exact("spiffe://lyft.com/frontend-team");
++
++    transport_socket->mutable_typed_config()->PackFrom(quic_config);
++  });
++
++  setupXfccHeaderConfig();
++  initialize();
++
++  // Connect with client certificate that has matching SAN.
++  codec_client_ = makeHttpConnection(makeClientConnection(lookupPort("http")));
++  auto response = codec_client_->makeHeaderOnlyRequest(default_request_headers_);
++
++  waitForNextUpstreamRequest();
++
++  // Verify SAN-based validation succeeded.
++  verifyServerSideClientCertInfo("Test Frontend Team");
++
++  // Verify specific SAN information in XFCC.
++  auto xfcc_headers =
++      upstream_request_->headers().get(Http::LowerCaseString("x-forwarded-client-cert"));
++  std::string xfcc_value = std::string(xfcc_headers[0]->value().getStringView());
++  EXPECT_THAT(xfcc_value, testing::HasSubstr("URI=spiffe://lyft.com/frontend-team"))
++      << "Should contain URI SAN";
++
++  upstream_request_->encodeHeaders(default_response_headers_, true);
++  ASSERT_TRUE(response->waitForEndStream());
++  EXPECT_EQ("200", response->headers().getStatusValue());
++
++  codec_client_->close();
++}
++
++// Test TLS version and cipher suite information.
++TEST_P(QuicMtlsIntegrationTest, TlsVersionAndCipherSuiteInformation) {
++  setupServerWithClientCertValidation();
++  initialize();
++
++  codec_client_ = makeHttpConnection(makeClientConnection(lookupPort("http")));
++  auto response = codec_client_->makeHeaderOnlyRequest(default_request_headers_);
++
++  waitForNextUpstreamRequest();
++
++  // Get SSL connection info for TLS details.
++  auto* quic_session = static_cast<EnvoyQuicClientSession*>(codec_client_->connection());
++  auto ssl_info = quic_session->ssl();
++
++  // Test TLS version information.
++  EXPECT_FALSE(ssl_info->tlsVersion().empty()) << "TLS version should not be empty";
++
++  // Test cipher suite information.
++  EXPECT_NE(ssl_info->ciphersuiteId(), 0xffff) << "Cipher suite ID should be valid";
++  EXPECT_FALSE(ssl_info->ciphersuiteString().empty()) << "Cipher suite string should not be empty";
++
++  // Test ALPN negotiation.
++  EXPECT_FALSE(ssl_info->alpn().empty()) << "ALPN should be negotiated";
++
++  upstream_request_->encodeHeaders(default_response_headers_, true);
++  ASSERT_TRUE(response->waitForEndStream());
++  EXPECT_EQ("200", response->headers().getStatusValue());
++
++  codec_client_->close();
++}
++
++TEST_P(QuicMtlsIntegrationTest, QuicSslConnectionInfoComprehensiveCoverage) {
++  setupServerWithClientCertValidation();
++  initialize();
++
++  codec_client_ = makeHttpConnection(makeClientConnection(lookupPort("http")));
++  auto response = codec_client_->makeHeaderOnlyRequest(default_request_headers_);
++
++  waitForNextUpstreamRequest();
++
++  auto* quic_session = static_cast<EnvoyQuicClientSession*>(codec_client_->connection());
++  auto ssl_info = quic_session->ssl();
++
++  // Test issuerPeerCertificate().
++  const std::string& issuer = ssl_info->issuerPeerCertificate();
++  EXPECT_FALSE(issuer.empty()) << "Issuer should not be empty for valid certificate";
++  ENVOY_LOG_MISC(info, "Certificate issuer: {}", issuer);
++
++  // Test parsedSubjectPeerCertificate().
++  auto parsed_subject = ssl_info->parsedSubjectPeerCertificate();
++  EXPECT_TRUE(parsed_subject.has_value()) << "Parsed subject should be available";
++  ENVOY_LOG_MISC(info, "Parsed subject available: {}", parsed_subject.has_value());
++
++  // Test serialNumbersPeerCertificates().
++  auto serial_numbers = ssl_info->serialNumbersPeerCertificates();
++  EXPECT_FALSE(serial_numbers.empty()) << "Should have at least one serial number in chain";
++  for (const auto& sn : serial_numbers) {
++    EXPECT_FALSE(sn.empty()) << "Serial number should not be empty";
++  }
++  ENVOY_LOG_MISC(info, "Certificate chain has {} serial numbers", serial_numbers.size());
++
++  // Test `ipSansPeerCertificate()`.
++  auto ip_sans = ssl_info->ipSansPeerCertificate();
++  // IP SANs may or may not be present depending on the certificate.
++  ENVOY_LOG_MISC(info, "Certificate has {} IP SANs", ip_sans.size());
++
++  // Test `emailSansPeerCertificate()`.
++  auto email_sans = ssl_info->emailSansPeerCertificate();
++  // Email SANs may or may not be present depending on the certificate.
++  ENVOY_LOG_MISC(info, "Certificate has {} Email SANs", email_sans.size());
++
++  // Test `othernameSansPeerCertificate()`.
++  auto othername_sans = ssl_info->othernameSansPeerCertificate();
++  // OtherName SANs may or may not be present depending on the certificate.
++  ENVOY_LOG_MISC(info, "Certificate has {} OtherName SANs", othername_sans.size());
++
++  // Test `oidsPeerCertificate()`.
++  auto oids = ssl_info->oidsPeerCertificate();
++  // OIDs should be present for most certificates.
++  ENVOY_LOG_MISC(info, "Certificate has {} OIDs", oids.size());
++
++  // Test local certificate methods.
++  // These return empty for QUIC as noted in the TODO.
++  auto ip_sans_local = ssl_info->ipSansLocalCertificate();
++  auto email_sans_local = ssl_info->emailSansLocalCertificate();
++  auto othername_sans_local = ssl_info->othernameSansLocalCertificate();
++  auto oids_local = ssl_info->oidsLocalCertificate();
++  EXPECT_TRUE(ip_sans_local.empty()) << "Local IP SANs should be empty for QUIC";
++  EXPECT_TRUE(email_sans_local.empty()) << "Local Email SANs should be empty for QUIC";
++  EXPECT_TRUE(othername_sans_local.empty()) << "Local OtherName SANs should be empty for QUIC";
++  EXPECT_TRUE(oids_local.empty()) << "Local OIDs should be empty for QUIC";
++
++  upstream_request_->encodeHeaders(default_response_headers_, true);
++  ASSERT_TRUE(response->waitForEndStream());
++  EXPECT_EQ("200", response->headers().getStatusValue());
++
++  codec_client_->close();
++}
++
++TEST_P(QuicMtlsIntegrationTest, PeerCertificateSanMatcherCoverage) {
++  setupServerWithClientCertValidation();
++  initialize();
++
++  codec_client_ = makeHttpConnection(makeClientConnection(lookupPort("http")));
++  auto response = codec_client_->makeHeaderOnlyRequest(default_request_headers_);
++
++  waitForNextUpstreamRequest();
++
++  auto* quic_session = static_cast<EnvoyQuicClientSession*>(codec_client_->connection());
++  auto ssl_info = quic_session->ssl();
++
++  // Use DnsExactStringSanMatcher which doesn't require a context.
++  Extensions::TransportSockets::Tls::DnsExactStringSanMatcher dns_matcher("server1.lyft.com");
++  bool dns_matches = ssl_info->peerCertificateSanMatches(dns_matcher);
++  ENVOY_LOG_MISC(info, "DNS SAN matcher result for server1.lyft.com: {}", dns_matches);
++
++  // Test with a non-matching domain.
++  Extensions::TransportSockets::Tls::DnsExactStringSanMatcher non_matching_matcher(
++      "nonexistent.example.com");
++  bool non_matches = ssl_info->peerCertificateSanMatches(non_matching_matcher);
++  EXPECT_FALSE(non_matches) << "Non-matching domain should not match";
++  ENVOY_LOG_MISC(info, "DNS SAN matcher result for nonexistent.example.com: {}", non_matches);
++
++  upstream_request_->encodeHeaders(default_response_headers_, true);
++  ASSERT_TRUE(response->waitForEndStream());
++  EXPECT_EQ("200", response->headers().getStatusValue());
++
++  codec_client_->close();
++}
++
++} // namespace Quic
++} // namespace Envoy

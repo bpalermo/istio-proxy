@@ -21,12 +21,6 @@ fileExistenceTests:
     permissions: '-rwxr-xr-x'
     uid: 0
     gid: 0
-  - name: 'rust_module'
-    path: '/usr/local/lib/librust_module.so'
-    shouldExist: true
-    permissions: '-rwxr-xr-x'
-    uid: 0
-    gid: 0
   - name: 'envoy_bootstrap'
     path: '/var/lib/istio/envoy/envoy_bootstrap_tmpl.json'
     shouldExist: true
