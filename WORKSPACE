@@ -42,6 +42,10 @@ load("@envoy//bazel:repositories.bzl", "envoy_dependencies")
 
 envoy_dependencies()
 
+load("@envoy//bazel:bazel_deps.bzl", "envoy_bazel_dependencies")
+
+envoy_bazel_dependencies()
+
 load("@envoy//bazel:repositories_extra.bzl", "envoy_dependencies_extra")
 
 envoy_dependencies_extra(ignore_root_user_error = True)
@@ -58,18 +62,13 @@ load("@envoy//bazel:dependency_imports.bzl", "envoy_dependency_imports")
 
 envoy_dependency_imports()
 
-load("@envoy//bazel:dependency_imports_extra.bzl", "envoy_dependency_imports_extra")
+load("@envoy//bazel:repo.bzl", "envoy_repo")
 
-envoy_dependency_imports_extra()
+envoy_repo()
 
-# Rust
-load("//bazel/rust:crates_repository.bzl", "crates_repository")
+load("@envoy//bazel:toolchains.bzl", "envoy_toolchains")
 
-crates_repository()
-
-load("@crate_index//:defs.bzl", "crate_repositories")
-
-crate_repositories()
+envoy_toolchains()
 
 load("@container_structure_test//:repositories.bzl", "container_structure_test_register_toolchain")
 

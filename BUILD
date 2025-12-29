@@ -73,16 +73,6 @@ pkg_tar(
 )
 
 pkg_tar(
-    name = "rust_module_tar",
-    srcs = ["//filters/http/rust_module"],
-    extension = "tar.gz",
-    mode = "0755",
-    owner = "0.0",
-    package_dir = "/usr/local/lib/",
-    visibility = ["//visibility:public"],
-)
-
-pkg_tar(
     name = "envoy_bootstrap_template_tar",
     extension = "tar.gz",
     files = {
@@ -109,7 +99,6 @@ oci_image(
         ":envoy_tar",
         ":pilot_agent_tar",
         ":envoy_bootstrap_template_tar",
-        ":rust_module_tar",
     ],
     workdir = "/",
 )
