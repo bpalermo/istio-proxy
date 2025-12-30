@@ -21,12 +21,12 @@ RT_LIBRARY_PATH="${LLVM_LIBDIR}/clang/${LLVM_VERSION}/lib/${LLVM_TARGET}"
 
 cat <<EOF > "${BAZELRC_FILE}"
 # Generated file, do not edit. If you want to disable clang, just delete this file.
-build:clang --host_action_env=PATH=${PATH} --action_env=PATH=${PATH}
+build:clang-local --host_action_env=PATH=${PATH} --action_env=PATH=${PATH}
 
-build:clang --action_env=LLVM_CONFIG=${LLVM_CONFIG} --host_action_env=LLVM_CONFIG=${LLVM_CONFIG}
-build:clang --repo_env=LLVM_CONFIG=${LLVM_CONFIG}
-build:clang --linkopt=-L${LLVM_LIBDIR}
-build:clang --linkopt=-Wl,-rpath,${LLVM_LIBDIR}
+build:clang-local --action_env=LLVM_CONFIG=${LLVM_CONFIG} --host_action_env=LLVM_CONFIG=${LLVM_CONFIG}
+build:clang-local --repo_env=LLVM_CONFIG=${LLVM_CONFIG}
+build:clang-local --linkopt=-L${LLVM_LIBDIR}
+build:clang-local --linkopt=-Wl,-rpath,${LLVM_LIBDIR}
 
 build:asan --linkopt=-L${RT_LIBRARY_PATH}
 EOF

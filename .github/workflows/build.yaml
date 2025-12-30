@@ -100,7 +100,7 @@ jobs:
       - name: Setup Build
         run: |
           bazel/setup_clang.sh "${{ env.LLVM_PATH }}"
-          echo "build --config=clang" >> user.bazelrc
+          echo "build --config=clang-local" >> user.bazelrc
       - name: Setup Bazel
         uses: bazel-contrib/setup-bazel@0.15.0
         with:
