@@ -7,7 +7,7 @@ metadataTest:
     - key: ENVOY_DYNAMIC_MODULES_SEARCH_PATH
       value: /usr/local/lib
     - key: ISTIO_META_ISTIO_PROXY_SHA
-      value: 19d31b12e62848c5e9f3f786c6c9a650ebc00b64
+      value: fcbe46286eaaad4242a0384ba109df744a862e7d
 fileExistenceTests:
   - name: 'envoy'
     path: '/usr/local/bin/envoy'
