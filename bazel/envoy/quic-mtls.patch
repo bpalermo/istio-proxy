@@ -1,60 +1,5 @@
-From 38ccf1ad8a3bf0d0ca2a96b9663f38d1af0e4adc Mon Sep 17 00:00:00 2001
-From: Rohit Agrawal <rohit.agrawal@databricks.com>
-Date: Tue, 24 Jun 2025 09:10:34 -0700
-Subject: [PATCH] quic: enable client certificate authentication support
-
-Signed-off-by: Rohit Agrawal <rohit.agrawal@databricks.com>
----
- changelogs/current.yaml                       |   5 +
- source/common/quic/BUILD                      |  23 +-
- source/common/quic/active_quic_listener.cc    |  14 +-
- source/common/quic/active_quic_listener.h     |   3 +
- .../common/quic/envoy_quic_proof_verifier.cc  |   4 +-
- .../quic/envoy_quic_proof_verifier_base.cc    |  25 -
- .../quic/envoy_quic_proof_verifier_base.h     |  21 +-
- .../quic/envoy_quic_server_proof_verifier.cc  | 177 +++++
- .../quic/envoy_quic_server_proof_verifier.h   |  40 ++
- .../common/quic/envoy_quic_server_session.cc  |  22 +-
- .../quic_client_transport_socket_factory.cc   | 107 ++-
- .../quic_server_transport_socket_factory.cc   |  14 +-
- .../quic_server_transport_socket_factory.h    |   5 +
- source/common/quic/quic_ssl_connection_info.h | 627 +++++++++++++++++-
- .../tls/cert_validator/default_validator.cc   |   3 +-
- source/common/tls/client_context_impl.h       |   1 +
- .../cert_validator/spiffe/spiffe_validator.cc |   2 +-
- test/common/quic/BUILD                        |  22 +
- .../quic/envoy_quic_proof_verifier_test.cc    |  92 +++
- .../envoy_quic_server_proof_verifier_test.cc  | 135 ++++
- .../quic/envoy_quic_server_session_test.cc    |   1 +
- .../quic_transport_socket_factory_test.cc     | 139 +++-
- .../cert_validator/default_validator_test.cc  |  41 +-
- test/integration/BUILD                        |  13 +
- .../integration/quic_mtls_integration_test.cc | 537 +++++++++++++++
- 25 files changed, 1970 insertions(+), 103 deletions(-)
- delete mode 100644 source/common/quic/envoy_quic_proof_verifier_base.cc
- create mode 100644 source/common/quic/envoy_quic_server_proof_verifier.cc
- create mode 100644 source/common/quic/envoy_quic_server_proof_verifier.h
- create mode 100644 test/common/quic/envoy_quic_server_proof_verifier_test.cc
- create mode 100644 test/integration/quic_mtls_integration_test.cc
-
-diff --git a/changelogs/current.yaml b/changelogs/current.yaml
-index 4646f59a1ef7f..6dca9e504c194 100644
---- a/changelogs/current.yaml
-+++ b/changelogs/current.yaml
-@@ -235,6 +235,11 @@ new_features:
-   change: |
-     Removed work-in-progress annotations from RBAC filter ``matcher`` and ``shadow_matcher`` fields in HTTP and network
-     filters, marking the feature stable.
-+- area: quic
-+  change: |
-+    Added support for client certificate authentication (mTLS) in QUIC/HTTP3 connections. When
-+    ``require_client_certificate`` is enabled in the downstream TLS context, the QUIC server will enforce client
-+    certificate validation during the TLS handshake.
- - area: access_log
-   change: |
-     Added process-level rate limiting on access log emission via
 diff --git a/source/common/quic/BUILD b/source/common/quic/BUILD
-index 745de7f9ef925..a8e41b9588a0a 100644
+index 745de7f9ef..a8e41b9588 100644
 --- a/source/common/quic/BUILD
 +++ b/source/common/quic/BUILD
 @@ -132,14 +132,11 @@ envoy_cc_library(
@@ -106,7 +51,7 @@ index 745de7f9ef925..a8e41b9588a0a 100644
          "//envoy/network:listener_interface",
          "//source/common/network:listener_lib",
 diff --git a/source/common/quic/active_quic_listener.cc b/source/common/quic/active_quic_listener.cc
-index b95f441f93b9a..71c22d988eff9 100644
+index b95f441f93..71c22d988e 100644
 --- a/source/common/quic/active_quic_listener.cc
 +++ b/source/common/quic/active_quic_listener.cc
 @@ -19,6 +19,7 @@
@@ -153,7 +98,7 @@ index b95f441f93b9a..71c22d988eff9 100644
  }
 
 diff --git a/source/common/quic/active_quic_listener.h b/source/common/quic/active_quic_listener.h
-index c354f44ad707b..0e6707ce3db73 100644
+index c354f44ad7..0e6707ce3d 100644
 --- a/source/common/quic/active_quic_listener.h
 +++ b/source/common/quic/active_quic_listener.h
 @@ -13,6 +13,7 @@
@@ -164,7 +109,7 @@ index c354f44ad707b..0e6707ce3db73 100644
  #include "source/common/runtime/runtime_protos.h"
  #include "source/server/active_udp_listener.h"
 
-@@ -106,6 +107,8 @@ class ActiveQuicListener : public Envoy::Server::ActiveUdpListenerBase,
+@@ -106,6 +107,8 @@ private:
    // This is an equivalent of max_connections_to_accept_per_socket_event for TCP
    // listeners.
    uint32_t max_sessions_per_event_loop_;
@@ -174,7 +119,7 @@ index c354f44ad707b..0e6707ce3db73 100644
 
  using ActiveQuicListenerPtr = std::unique_ptr<ActiveQuicListener>;
 diff --git a/source/common/quic/envoy_quic_proof_verifier.cc b/source/common/quic/envoy_quic_proof_verifier.cc
-index 70741c345f5f9..d69a957174306 100644
+index 70741c345f..d69a957174 100644
 --- a/source/common/quic/envoy_quic_proof_verifier.cc
 +++ b/source/common/quic/envoy_quic_proof_verifier.cc
 @@ -82,7 +82,9 @@ quic::QuicAsyncStatus EnvoyQuicProofVerifier::VerifyCertChain(
@@ -190,7 +135,7 @@ index 70741c345f5f9..d69a957174306 100644
    for (const auto& cert_str : certs) {
 diff --git a/source/common/quic/envoy_quic_proof_verifier_base.cc b/source/common/quic/envoy_quic_proof_verifier_base.cc
 deleted file mode 100644
-index 711e07d38a080..0000000000000
+index 711e07d38a..0000000000
 --- a/source/common/quic/envoy_quic_proof_verifier_base.cc
 +++ /dev/null
 @@ -1,25 +0,0 @@
@@ -220,7 +165,7 @@ index 711e07d38a080..0000000000000
 -} // namespace Quic
 -} // namespace Envoy
 diff --git a/source/common/quic/envoy_quic_proof_verifier_base.h b/source/common/quic/envoy_quic_proof_verifier_base.h
-index b754f5487d4c2..eab0a7c7e7832 100644
+index b754f5487d..eab0a7c7e7 100644
 --- a/source/common/quic/envoy_quic_proof_verifier_base.h
 +++ b/source/common/quic/envoy_quic_proof_verifier_base.h
 @@ -1,5 +1,6 @@
@@ -266,7 +211,7 @@ index b754f5487d4c2..eab0a7c7e7832 100644
  };
 diff --git a/source/common/quic/envoy_quic_server_proof_verifier.cc b/source/common/quic/envoy_quic_server_proof_verifier.cc
 new file mode 100644
-index 0000000000000..84bd6306eb1e6
+index 0000000000..84bd6306eb
 --- /dev/null
 +++ b/source/common/quic/envoy_quic_server_proof_verifier.cc
 @@ -0,0 +1,177 @@
@@ -449,7 +394,7 @@ index 0000000000000..84bd6306eb1e6
 +} // namespace Envoy
 diff --git a/source/common/quic/envoy_quic_server_proof_verifier.h b/source/common/quic/envoy_quic_server_proof_verifier.h
 new file mode 100644
-index 0000000000000..d5bec704a6263
+index 0000000000..d5bec704a6
 --- /dev/null
 +++ b/source/common/quic/envoy_quic_server_proof_verifier.h
 @@ -0,0 +1,40 @@
@@ -494,7 +439,7 @@ index 0000000000000..d5bec704a6263
 +} // namespace Quic
 +} // namespace Envoy
 diff --git a/source/common/quic/envoy_quic_server_session.cc b/source/common/quic/envoy_quic_server_session.cc
-index a277e1151a9d1..72d67ec3245d1 100644
+index a277e1151a..72d67ec324 100644
 --- a/source/common/quic/envoy_quic_server_session.cc
 +++ b/source/common/quic/envoy_quic_server_session.cc
 @@ -169,6 +169,7 @@ quic::QuicConnection* EnvoyQuicServerSession::quicConnection() {
@@ -534,7 +479,7 @@ index a277e1151a9d1..72d67ec3245d1 100644
  }
 
 diff --git a/source/common/quic/quic_client_transport_socket_factory.cc b/source/common/quic/quic_client_transport_socket_factory.cc
-index 6e0689c012bd0..2f71fd82d272e 100644
+index 6e0689c012..2f71fd82d2 100644
 --- a/source/common/quic/quic_client_transport_socket_factory.cc
 +++ b/source/common/quic/quic_client_transport_socket_factory.cc
 @@ -4,9 +4,11 @@
@@ -669,7 +614,7 @@ index 6e0689c012bd0..2f71fd82d272e 100644
    // Return the latest crypto config.
    return tls_config.crypto_config_;
 diff --git a/source/common/quic/quic_server_transport_socket_factory.cc b/source/common/quic/quic_server_transport_socket_factory.cc
-index 4b3c128bfb65f..595b35bb2e335 100644
+index 4b3c128bfb..595b35bb2e 100644
 --- a/source/common/quic/quic_server_transport_socket_factory.cc
 +++ b/source/common/quic/quic_server_transport_socket_factory.cc
 @@ -16,19 +16,16 @@ absl::StatusOr<Network::DownstreamTransportSocketFactoryPtr>
@@ -708,10 +653,10 @@ index 4b3c128bfb65f..595b35bb2e335 100644
    ENVOY_LOG(debug, "Secret is updated.");
 
 diff --git a/source/common/quic/quic_server_transport_socket_factory.h b/source/common/quic/quic_server_transport_socket_factory.h
-index 85aaf45a7e5d5..a29faff91afdb 100644
+index 85aaf45a7e..a29faff91a 100644
 --- a/source/common/quic/quic_server_transport_socket_factory.h
 +++ b/source/common/quic/quic_server_transport_socket_factory.h
-@@ -38,6 +38,11 @@ class QuicServerTransportSocketFactory : public Network::DownstreamTransportSock
+@@ -38,6 +38,11 @@ public:
 
    bool earlyDataEnabled() const { return enable_early_data_; }
 
@@ -724,7 +669,7 @@ index 85aaf45a7e5d5..a29faff91afdb 100644
    QuicServerTransportSocketFactory(bool enable_early_data, Stats::Scope& store,
                                     Ssl::ServerContextConfigPtr config,
 diff --git a/source/common/quic/quic_ssl_connection_info.h b/source/common/quic/quic_ssl_connection_info.h
-index a857d6d831436..d9130c1b44f14 100644
+index a857d6d831..d9130c1b44 100644
 --- a/source/common/quic/quic_ssl_connection_info.h
 +++ b/source/common/quic/quic_ssl_connection_info.h
 @@ -1,8 +1,14 @@
@@ -752,7 +697,7 @@ index a857d6d831436..d9130c1b44f14 100644
  public:
    QuicSslConnectionInfo(quic::QuicSession& session) : session_(session) {}
 
-@@ -24,35 +31,623 @@ class QuicSslConnectionInfo : public Extensions::TransportSockets::Tls::Connecti
+@@ -24,35 +31,623 @@ public:
    }
 
    // Extensions::TransportSockets::Tls::ConnectionInfoImplBase
@@ -1392,7 +1337,7 @@ index a857d6d831436..d9130c1b44f14 100644
 
  } // namespace Quic
 diff --git a/source/common/tls/cert_validator/default_validator.cc b/source/common/tls/cert_validator/default_validator.cc
-index a73fc204deeef..4469717a8a9df 100644
+index a73fc204de..4469717a8a 100644
 --- a/source/common/tls/cert_validator/default_validator.cc
 +++ b/source/common/tls/cert_validator/default_validator.cc
 @@ -568,12 +568,13 @@ absl::Status DefaultCertValidator::addClientValidationContext(SSL_CTX* ctx,
@@ -1411,10 +1356,10 @@ index a73fc204deeef..4469717a8a9df 100644
      uint32_t max_verify_depth = std::min(config_->maxVerifyDepth().value(), uint32_t{INT_MAX});
      // Older BoringSSLs behave like OpenSSL 1.0.x and exclude the leaf from the
 diff --git a/source/common/tls/client_context_impl.h b/source/common/tls/client_context_impl.h
-index ee879160b96bf..f58dd37b00225 100644
+index ee879160b9..f58dd37b00 100644
 --- a/source/common/tls/client_context_impl.h
 +++ b/source/common/tls/client_context_impl.h
-@@ -46,6 +46,7 @@ class ClientContextImpl : public ContextImpl, public Envoy::Ssl::ClientContext {
+@@ -46,6 +46,7 @@ public:
    absl::StatusOr<bssl::UniquePtr<SSL>>
    newSsl(const Network::TransportSocketOptionsConstSharedPtr& options,
           Upstream::HostDescriptionConstSharedPtr host) override;
@@ -1423,7 +1368,7 @@ index ee879160b96bf..f58dd37b00225 100644
  private:
    ClientContextImpl(Stats::Scope& scope, const Envoy::Ssl::ClientContextConfig& config,
 diff --git a/source/extensions/transport_sockets/tls/cert_validator/spiffe/spiffe_validator.cc b/source/extensions/transport_sockets/tls/cert_validator/spiffe/spiffe_validator.cc
-index ed6f20ab31bc9..57c46ea2beca1 100644
+index ed6f20ab31..57c46ea2be 100644
 --- a/source/extensions/transport_sockets/tls/cert_validator/spiffe/spiffe_validator.cc
 +++ b/source/extensions/transport_sockets/tls/cert_validator/spiffe/spiffe_validator.cc
 @@ -496,7 +496,7 @@ Envoy::Ssl::CertificateDetailsPtr SPIFFEValidator::getCaCertInformation() const
@@ -1436,7 +1381,7 @@ index ed6f20ab31bc9..57c46ea2beca1 100644
  class SPIFFEValidatorFactory : public CertValidatorFactory {
  public:
 diff --git a/test/common/quic/BUILD b/test/common/quic/BUILD
-index 73753be79e822..659047b7ca952 100644
+index 7bfddf11f2..36e97b9aee 100644
 --- a/test/common/quic/BUILD
 +++ b/test/common/quic/BUILD
 @@ -116,6 +116,28 @@ envoy_cc_test(
@@ -1469,7 +1414,7 @@ index 73753be79e822..659047b7ca952 100644
      name = "envoy_quic_server_stream_test",
      srcs = envoy_select_enable_http3(["envoy_quic_server_stream_test.cc"]),
 diff --git a/test/common/quic/envoy_quic_proof_verifier_test.cc b/test/common/quic/envoy_quic_proof_verifier_test.cc
-index d29d15cd6321d..5a1e6e63c50a3 100644
+index d29d15cd63..5a1e6e63c5 100644
 --- a/test/common/quic/envoy_quic_proof_verifier_test.cc
 +++ b/test/common/quic/envoy_quic_proof_verifier_test.cc
 @@ -457,5 +457,97 @@ TEST_F(EnvoyQuicProofVerifierTest, CreateDefaultContext) {
@@ -1572,7 +1517,7 @@ index d29d15cd6321d..5a1e6e63c50a3 100644
  } // namespace Envoy
 diff --git a/test/common/quic/envoy_quic_server_proof_verifier_test.cc b/test/common/quic/envoy_quic_server_proof_verifier_test.cc
 new file mode 100644
-index 0000000000000..675d7d6563d2d
+index 0000000000..675d7d6563
 --- /dev/null
 +++ b/test/common/quic/envoy_quic_server_proof_verifier_test.cc
 @@ -0,0 +1,135 @@
@@ -1712,10 +1657,10 @@ index 0000000000000..675d7d6563d2d
 +} // namespace Quic
 +} // namespace Envoy
 diff --git a/test/common/quic/envoy_quic_server_session_test.cc b/test/common/quic/envoy_quic_server_session_test.cc
-index d81484be2a946..841f6000beffe 100644
+index d81484be2a..841f6000be 100644
 --- a/test/common/quic/envoy_quic_server_session_test.cc
 +++ b/test/common/quic/envoy_quic_server_session_test.cc
-@@ -58,6 +58,7 @@ class TestEnvoyQuicServerSession : public EnvoyQuicServerSession {
+@@ -58,6 +58,7 @@ public:
    }
 
    using EnvoyQuicServerSession::GetCryptoStream;
@@ -1724,10 +1669,10 @@ index d81484be2a946..841f6000beffe 100644
 
  class ProofSourceDetailsSetter {
 diff --git a/test/common/quic/quic_transport_socket_factory_test.cc b/test/common/quic/quic_transport_socket_factory_test.cc
-index bf1d3f683eabc..1bbaf7885d164 100644
+index bf1d3f683e..1bbaf7885d 100644
 --- a/test/common/quic/quic_transport_socket_factory_test.cc
 +++ b/test/common/quic/quic_transport_socket_factory_test.cc
-@@ -95,7 +95,7 @@ TEST_F(QuicServerTransportSocketFactoryConfigTest, EarlyDataExplicitlyEnabled) {
+@@ -95,7 +95,7 @@ enable_early_data:
    verifyQuicServerTransportSocketFactory(yaml, true);
  }
 
@@ -1736,7 +1681,7 @@ index bf1d3f683eabc..1bbaf7885d164 100644
    const std::string yaml = TestEnvironment::substitute(R"EOF(
  downstream_tls_context:
    require_client_certificate: true
-@@ -109,8 +109,81 @@ TEST_F(QuicServerTransportSocketFactoryConfigTest, ClientAuthUnsupported) {
+@@ -109,8 +109,81 @@ downstream_tls_context:
        trusted_ca:
          filename: "{{ test_rundir }}/test/common/tls/test_data/ca_cert.pem"
  )EOF");
@@ -1887,7 +1832,7 @@ index bf1d3f683eabc..1bbaf7885d164 100644
  } // namespace Quic
  } // namespace Envoy
 diff --git a/test/common/tls/cert_validator/default_validator_test.cc b/test/common/tls/cert_validator/default_validator_test.cc
-index 7cc41f3a5480e..31344555db6b0 100644
+index d4aa837b5f..31344555db 100644
 --- a/test/common/tls/cert_validator/default_validator_test.cc
 +++ b/test/common/tls/cert_validator/default_validator_test.cc
 @@ -1,6 +1,7 @@
@@ -1898,91 +1843,66 @@ index 7cc41f3a5480e..31344555db6b0 100644
  #include "source/common/tls/cert_validator/default_validator.h"
  #include "source/common/tls/cert_validator/san_matcher.h"
 
-@@ -823,33 +824,33 @@ TEST(DefaultCertValidatorTest, TestCertificateValidationErrorDetailsForSanFailur
-   Stats::TestUtil::TestStore test_store;
-   SslStats stats = generateSslStats(*test_store.rootScope());
+@@ -817,6 +818,57 @@ TEST(DefaultCertValidatorTest, DefaultValidatorCaExpirationStats) {
+   EXPECT_EQ(gauge_opt->get().value(), std::chrono::seconds::max().count());
+ }
 
--  // Load a certificate with DNS SANs
++// Test that ValidationResults contains detailed error information when SAN validation fails.
++TEST(DefaultCertValidatorTest, TestCertificateValidationErrorDetailsForSanFailure) {
++  NiceMock<Server::Configuration::MockServerFactoryContext> context;
++  Stats::TestUtil::TestStore test_store;
++  SslStats stats = generateSslStats(*test_store.rootScope());
++
 +  // Load a certificate with DNS SANs.
-   bssl::UniquePtr<X509> cert = readCertFromFile(
-       TestEnvironment::substitute("{{ test_rundir }}/test/common/tls/test_data/san_dns_cert.pem"));
-
--  // Create SAN matchers that won't match the certificate (using regex as DNS requires it)
++  bssl::UniquePtr<X509> cert = readCertFromFile(
++      TestEnvironment::substitute("{{ test_rundir }}/test/common/tls/test_data/san_dns_cert.pem"));
++
 +  // Create SAN matchers that won't match the certificate (using regex as DNS requires it).
-   envoy::type::matcher::v3::StringMatcher matcher;
-   matcher.MergeFrom(TestUtility::createRegexMatcher(R"raw(nomatch\.example\.com)raw"));
-   std::vector<SanMatcherPtr> subject_alt_name_matchers;
-   subject_alt_name_matchers.push_back(
-       SanMatcherPtr{std::make_unique<StringSanMatcher>(GEN_DNS, matcher, context)});
-
--  // Create the validator with no config (so verify_trusted_ca_ is false)
++  envoy::type::matcher::v3::StringMatcher matcher;
++  matcher.MergeFrom(TestUtility::createRegexMatcher(R"raw(nomatch\.example\.com)raw"));
++  std::vector<SanMatcherPtr> subject_alt_name_matchers;
++  subject_alt_name_matchers.push_back(
++      SanMatcherPtr{std::make_unique<StringSanMatcher>(GEN_DNS, matcher, context)});
++
 +  // Create the validator with no config (so verify_trusted_ca_ is false).
-   auto default_validator =
-       std::make_unique<Extensions::TransportSockets::Tls::DefaultCertValidator>(
-           /*CertificateValidationContextConfig=*/nullptr, stats, context);
-
--  // Call verifyCertificate directly which populates error_details on SAN mismatch
++  auto default_validator =
++      std::make_unique<Extensions::TransportSockets::Tls::DefaultCertValidator>(
++          /*CertificateValidationContextConfig=*/nullptr, stats, context);
++
 +  // Call verifyCertificate directly which populates error_details on SAN mismatch.
-   std::string error_details;
-   uint8_t tls_alert;
-   Ssl::ClientValidationStatus status = default_validator->verifyCertificate(
-       cert.get(), /*verify_san_list=*/{}, subject_alt_name_matchers, /*stream_info=*/{},
-       &error_details, &tls_alert);
-
--  // Validation should fail because the SAN doesn't match
++  std::string error_details;
++  uint8_t tls_alert;
++  Ssl::ClientValidationStatus status = default_validator->verifyCertificate(
++      cert.get(), /*verify_san_list=*/{}, subject_alt_name_matchers, /*stream_info=*/{},
++      &error_details, &tls_alert);
++
 +  // Validation should fail because the SAN doesn't match.
-   EXPECT_EQ(Ssl::ClientValidationStatus::Failed, status);
-
--  // The error_details should be populated with a meaningful error message
++  EXPECT_EQ(Ssl::ClientValidationStatus::Failed, status);
++
 +  // The error_details should be populated with a meaningful error message.
-   EXPECT_EQ(error_details, "verify cert failed: SAN matcher");
- }
-
-@@ -857,39 +858,17 @@ TEST(DefaultCertValidatorTest, TestCertificateValidationErrorDetailsForSanFailur
- TEST(DefaultCertValidatorTest, TestSslExtendedSocketInfoCertValidationError) {
-   TestSslExtendedSocketInfo extended_socket_info;
-
--  // Initially the error should be empty
++  EXPECT_EQ(error_details, "verify cert failed: SAN matcher");
++}
++
++// Test that TestSslExtendedSocketInfo properly stores and retrieves certificate validation errors.
++TEST(DefaultCertValidatorTest, TestSslExtendedSocketInfoCertValidationError) {
++  TestSslExtendedSocketInfo extended_socket_info;
++
 +  // Initially the error should be empty.
-   EXPECT_TRUE(extended_socket_info.certificateValidationError().empty());
-
--  // Set an error
++  EXPECT_TRUE(extended_socket_info.certificateValidationError().empty());
++
 +  // Set an error.
-   const std::string error_msg = "verify cert failed: X509_verify_cert: certificate has expired";
-   extended_socket_info.setCertificateValidationError(error_msg);
-
--  // Verify the error is stored and retrievable
++  const std::string error_msg = "verify cert failed: X509_verify_cert: certificate has expired";
++  extended_socket_info.setCertificateValidationError(error_msg);
++
 +  // Verify the error is stored and retrievable.
-   EXPECT_EQ(error_msg, extended_socket_info.certificateValidationError());
- }
-
--// Test that empty cert chain returns appropriate error details.
--TEST(DefaultCertValidatorTest, TestEmptyCertChainErrorDetails) {
--  NiceMock<Server::Configuration::MockServerFactoryContext> context;
--  Stats::TestUtil::TestStore test_store;
--  SslStats stats = generateSslStats(*test_store.rootScope());
--
--  auto default_validator =
--      std::make_unique<Extensions::TransportSockets::Tls::DefaultCertValidator>(
--          /*CertificateValidationContextConfig=*/nullptr, stats, context);
--
--  SSLContextPtr ssl_ctx = SSL_CTX_new(TLS_method());
--  bssl::UniquePtr<STACK_OF(X509)> cert_chain(sk_X509_new_null());
--
--  ValidationResults results = default_validator->doVerifyCertChain(
--      *cert_chain, /*callback=*/nullptr,
--      /*transport_socket_options=*/nullptr, *ssl_ctx, {}, false, "");
--
--  EXPECT_EQ(ValidationResults::ValidationStatus::Failed, results.status);
--  EXPECT_TRUE(results.error_details.has_value());
--  EXPECT_EQ(results.error_details.value(), "verify cert failed: empty cert chain");
--}
--
++  EXPECT_EQ(error_msg, extended_socket_info.certificateValidationError());
++}
++
  } // namespace Tls
  } // namespace TransportSockets
  } // namespace Extensions
 diff --git a/test/integration/BUILD b/test/integration/BUILD
-index 6703d3aa1bb2a..701ed3b42c78a 100644
+index 6703d3aa1b..701ed3b42c 100644
 --- a/test/integration/BUILD
 +++ b/test/integration/BUILD
 @@ -2999,3 +2999,16 @@ envoy_cc_test(
@@ -2004,7 +1924,7 @@ index 6703d3aa1bb2a..701ed3b42c78a 100644
 +)
 diff --git a/test/integration/quic_mtls_integration_test.cc b/test/integration/quic_mtls_integration_test.cc
 new file mode 100644
-index 0000000000000..c5cd82e466831
+index 0000000000..c5cd82e466
 --- /dev/null
 +++ b/test/integration/quic_mtls_integration_test.cc
 @@ -0,0 +1,537 @@

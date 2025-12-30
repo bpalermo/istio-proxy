@@ -5,10 +5,10 @@ ISTIO_ORG = "istio"
 # 1. Determine SHA256 `wget https://github.com/istio/proxy/archive/$COMMIT.tar.gz && sha256sum $COMMIT.tar.gz`
 # 2. Update .bazelversion, envoy.bazelrc and .bazelrc if needed.
 #
-# Commit date: 2024-08-12
-ISTIO_PROXY_SHA = "0879e0055d1da524a89415acd456e230b27fba70"
+# Commit date: 2025-12-27
+ISTIO_PROXY_SHA = "fcbe46286eaaad4242a0384ba109df744a862e7d"
 
-ISTIO_PROXY_SHA256 = "e377dcf9b6b203dc9b3a63dff1726f6a1c73653182404cbc47b6a3c4356e17fd"
+ISTIO_PROXY_SHA256 = "b09725135d490fc46c970677cd4ae22df7071b738ae140a2a1c0d7f87960fe1b"
 
 ISTIO_PROXY_REPO = "proxy"
 
