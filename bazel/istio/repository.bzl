@@ -6,9 +6,9 @@ ISTIO_ORG = "istio"
 # 2. Update .bazelversion, envoy.bazelrc and .bazelrc if needed.
 #
 # Commit date: 2024-08-12
-ISTIO_PROXY_SHA = "19d31b12e62848c5e9f3f786c6c9a650ebc00b64"
+ISTIO_PROXY_SHA = "e80fb95f44230b7843849f2894289eca1652fb59"
 
-ISTIO_PROXY_SHA256 = "729edc510635701fd179eba1b7e724b62efe7bc5db0b89caca3cd59990c8b67f"
+ISTIO_PROXY_SHA256 = "18490296e57614644f2e41161bb2375da38810c975e104a16a7995ad99deee04"
 
 ISTIO_PROXY_REPO = "proxy"
 
