@@ -4,9 +4,9 @@ load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 # 2. Update .bazelversion, envoy.bazelrc and .bazelrc if needed.
 #
 # Commit date: 2025-12-10
-ENVOY_SHA = "44d1844d2480c42e4c2cb6e8a7872d57367604eb"
+ENVOY_SHA = "809213ab4403f02b04521567715f97ad5a1ae597"
 
-ENVOY_SHA256 = "54dc9e8a224fb789f1759848cb8e003f3257c1a31aa104ca2b0d1372001cde2a"
+ENVOY_SHA256 = "a7f121ecd10b8ced4abddb3004306e44fd273b4d893363d2713bdce03c1b5a95"
 
 ENVOY_ORG = "envoyproxy"
 
@@ -20,4 +20,8 @@ def envoy_repository():
         sha256 = ENVOY_SHA256,
         strip_prefix = ENVOY_REPO + "-" + ENVOY_SHA,
         url = "https://github.com/" + ENVOY_ORG + "/" + ENVOY_REPO + "/archive/" + ENVOY_SHA + ".tar.gz",
+        #        patches = [
+        #            "@github_com_bpalermo_istio_proxy//bazel/envoy:quic.patch",
+        #        ],
+        #        patch_args = ["-p1"],  # Strip one directory level from patch paths
     )
