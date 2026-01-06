@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: istio/istio
-          ref: 2ce3ad897b984a045d9d5f80a8c1bb8eefdf88f5
+          ref: 0879e0055d1da524a89415acd456e230b27fba70
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
