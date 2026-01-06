@@ -29,7 +29,7 @@ fn new_http_filter_config_fn<EC: EnvoyHttpFilterConfig, EHF: EnvoyHttpFilter>(
     _envoy_filter_config: &mut EC,
     filter_name: &str,
     filter_config: &[u8],
-) -> Option<Box<dyn HttpFilterConfig<EC, EHF>>> {
+) -> Option<Box<dyn HttpFilterConfig<EHF>>> {
     let filter_config = std::str::from_utf8(filter_config).unwrap();
     match filter_name {
         "oddeven" => Some(Box::new(oddeven::FilterConfig::new(filter_config))),
