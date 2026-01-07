@@ -20,8 +20,8 @@ def envoy_repository():
         sha256 = ENVOY_SHA256,
         strip_prefix = ENVOY_REPO + "-" + ENVOY_SHA,
         url = "https://github.com/" + ENVOY_ORG + "/" + ENVOY_REPO + "/archive/" + ENVOY_SHA + ".tar.gz",
-        #        patches = [
-        #            "@github_com_bpalermo_istio_proxy//bazel/envoy:quic.patch",
-        #        ],
-        #        patch_args = ["-p1"],  # Strip one directory level from patch paths
+        patches = [
+            "@github_com_bpalermo_istio_proxy//bazel/envoy:quic.patch",
+        ],
+        patch_args = ["-p1"],  # Strip one directory level from patch paths
     )
