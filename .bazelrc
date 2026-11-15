@@ -66,5 +66,10 @@ build:ci --build_metadata=VISIBILITY=PUBLIC
 build:ci --build_metadata=ROLE=CI
 # CI must build what the committed lockfile describes.
 common:ci --lockfile_mode=error
-common:ci --noshow_progress
+# Actions logs are not a terminal: print plain progress lines, one a minute,
+# so a long Envoy compile still shows it is moving.
+common:ci --curses=no
+common:ci --color=yes
+common:ci --show_progress_rate_limit=60
+common:ci --show_timestamps
 common:ci --test_output=errors

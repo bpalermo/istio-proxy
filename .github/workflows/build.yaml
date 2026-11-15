@@ -8,6 +8,13 @@ on:
 permissions:
   contents: read
 
+# One push at a time; a run already pushing is never cancelled, so every
+# image it started is pushed. A newer commit waiting in the queue replaces
+# an older one that has not started.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-24.04

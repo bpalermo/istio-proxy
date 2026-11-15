@@ -8,6 +8,11 @@ on:
 permissions:
   contents: read
 
+# A new push to the pull request cancels the run for the previous one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-24.04
