@@ -1,6 +1,42 @@
-# Keep istio.bazelrc up-to-date by run:
-# curl -sSL https://raw.githubusercontent.com/istio/proxy/master/.bazelrc > istio.bazelrc
-import %workspace%/istio.bazelrc
+# Envoy's own build options, copied from the pinned Envoy commit by
+# scripts/update_envoy.sh. Do not edit envoy.bazelrc by hand.
+import %workspace%/envoy.bazelrc
+
+# The C++ toolchain is Envoy's hermetic LLVM; never probe the host for one.
+common --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
+
+build --workspace_status_command=bazel/bazel_get_workspace_status
+
+# ========================================
+# Istio specific Bazel build/test options (from istio/proxy's .bazelrc).
+# ========================================
+
+# Enable path normalization by default.
+# See: https://github.com/envoyproxy/envoy/pull/6519
+build --define path_normalization_by_default=true
+
+# Build with embedded V8-based WebAssembly runtime.
+build --@proxy-wasm-cpp-host//bazel:engine=v8
+
+# Build Proxy-WASM plugins as native extensions.
+build --copt -DNULL_PLUGIN
+
+build --cxxopt -Wformat
+build --cxxopt -Wformat-security
+
+# Release builds without debug symbols.
+build:release -c opt
+build:release --strip=always
+
+# Release builds with debug symbols
+build:release-symbol -c opt
+
+# Debug builds
+build:debug -c dbg
+
+# ========================================
+# Remote cache and execution (BuildBuddy)
+# ========================================
 
 build:remote-cache --bes_results_url=https://app.buildbuddy.io/invocation/
 build:remote-cache --bes_backend=grpcs://remote.buildbuddy.io
@@ -22,7 +58,13 @@ build:rbe-buildbuddy --noslim_profile
 build:rbe-buildbuddy --experimental_profile_include_target_label
 build:rbe-buildbuddy --experimental_profile_include_primary_output
 
+build:remote --remote_timeout=7200
+
 build:ci --config=release
 build:ci --config=ci-remote-cache
 build:ci --build_metadata=VISIBILITY=PUBLIC
 build:ci --build_metadata=ROLE=CI
+# CI must build what the committed lockfile describes.
+common:ci --lockfile_mode=error
+common:ci --noshow_progress
+common:ci --test_output=errors

@@ -5,98 +5,31 @@ on:
     branches:
       - main
 
-env:
-  REGISTRY_IMAGE: palermo/istio-proxy
-  CARGO_BAZEL_REPIN: true
+permissions:
+  contents: read
 
 jobs:
-  istio:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-22.04, ubuntu-22.04-arm]
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          repository: istio/istio
-          ref: 2ce3ad897b984a045d9d5f80a8c1bb8eefdf88f5
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-      - name: Build Istio
-        env:
-          BUILD_WITH_CONTAINER: '0'
-        run: |
-          make build-linux
-      - name: Set architecture
-        run: |
-          if [ "${{ runner.arch }}" = "X64" ]; then
-            echo "ARCH=amd64" >> $GITHUB_ENV
-          elif [ "${{ runner.arch }}" = "ARM64" ]; then
-            echo "ARCH=arm64" >> $GITHUB_ENV
-          fi
-      - name: Prepare and upload istio files
-        run: |
-          mkdir -p istio-files
-          cp out/linux_${{ env.ARCH }}/pilot-agent istio-files/
-          cp tools/packaging/common/envoy_bootstrap.json istio-files/
-      - name: Upload istio files
-        uses: actions/upload-artifact@v4
-        with:
-          name: istio-${{ env.ARCH }}
-          path: istio-files/*
-          if-no-files-found: error
-          retention-days: 1
-
   test:
-    runs-on: ${{ matrix.os }}
-    needs: [ istio ]
-    strategy:
-      matrix:
-        os: [ubuntu-22.04, ubuntu-22.04-arm]
+    runs-on: ubuntu-24.04
     steps:
       - name: Maximize build space
-        uses: AdityaGarg8/remove-unwanted-software@v5
+        uses: AdityaGarg8/remove-unwanted-software@36765610732de8ee2e81a5c6c231506e2b5cabcf # v5.1
         with:
           remove-android: 'true'
           remove-dotnet: 'true'
           remove-haskell: 'true'
           remove-codeql: 'true'
-      - name: Set architecture
-        run: |
-          if [ "${{ runner.arch }}" = "X64" ]; then
-            echo "ARCH=amd64" >> $GITHUB_ENV
-          elif [ "${{ runner.arch }}" = "ARM64" ]; then
-            echo "ARCH=arm64" >> $GITHUB_ENV
-          fi
       - name: Checkout
-        uses: actions/checkout@v4
-      - name: Download digests
-        uses: actions/download-artifact@v4
-        with:
-          name: istio-${{ env.ARCH }}
-          path: ./
-      - name: APT packages
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libtinfo5
-          sudo rm -rf /var/lib/apt/lists/*
-      - name: Install LLVM and Clang
-        uses: KyleMayes/install-llvm-action@v2
-        with:
-          version: "18.1"
-          directory: ${{ runner.temp }}/llvm
-      - name: Setup Build
-        run: |
-          bazel/setup_clang.sh "${{ env.LLVM_PATH }}"
-          echo "build --config=clang" >> user.bazelrc
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Setup Bazel
-        uses: bazel-contrib/setup-bazel@0.15.0
+        uses: bazel-contrib/setup-bazel@f34d6a05eae3c24acab7fa54587492daeaeffdab # 0.19.2
         with:
           bazelisk-cache: true
           disk-cache: ${{ github.workflow }}
           repository-cache: true
+      # Builds envoy and pilot-agent for linux/amd64 and linux/arm64 with the
+      # toolchains Bazel downloads, and checks the image. No compiler, Go or
+      # Docker is taken from the runner.
       - name: Test
         run: |
           bazel test --config=ci --remote_header=x-buildbuddy-api-key=${{ secrets.BUILDBUDDY_ORG_API_KEY }} //...

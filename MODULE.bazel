@@ -1,0 +1,162 @@
+module(name = "bpalermo_istio_proxy")
+
+####################################################################################
+# Envoy
+####################################################################################
+
+# Envoy is not published to a module registry, so it is fetched as a pinned
+# GitHub archive. scripts/update_envoy.sh moves the pin and everything that has
+# to move with it (the versions below, envoy.bazelrc, .bazelversion,
+# ENVOY_VERSION.txt, MODULE.bazel.lock).
+#
+# Commit date: 2026-11-14
+ENVOY_SHA = "1d8dbb7909da01d0225cf8a5b5283e60409d988c"
+
+ENVOY_SHA256 = "de4dc4ddc2f32f13c0f5361d425faf967d821cfb94099175d13c9d2718acf767"
+
+ENVOY_ORG = "envoyproxy"
+
+ENVOY_REPO = "envoy"
+
+# To build against a local checkout, override both modules together:
+#   --override_module=envoy=/PATH/TO/ENVOY
+#   --override_module=envoy_api=/PATH/TO/ENVOY/api
+bazel_dep(name = "envoy", version = "1.41.0-dev")
+archive_override(
+    module_name = "envoy",
+    sha256 = ENVOY_SHA256,
+    strip_prefix = ENVOY_REPO + "-" + ENVOY_SHA,
+    urls = ["https://github.com/" + ENVOY_ORG + "/" + ENVOY_REPO + "/archive/" + ENVOY_SHA + ".tar.gz"],
+)
+
+# Envoy overrides envoy_api to its own api/ directory, but only the root
+# module's overrides count, so the same override is repeated here.
+bazel_dep(name = "envoy_api", version = "1.41.0-dev")
+archive_override(
+    module_name = "envoy_api",
+    sha256 = ENVOY_SHA256,
+    strip_prefix = ENVOY_REPO + "-" + ENVOY_SHA + "/api",
+    urls = ["https://github.com/" + ENVOY_ORG + "/" + ENVOY_REPO + "/archive/" + ENVOY_SHA + ".tar.gz"],
+)
+
+# envoy.bazelrc sets flags on these repositories by their plain names
+# (--@grpc//..., --@proxy-wasm-cpp-host//...), and a plain name only resolves
+# for a direct dependency of the root module. Versions must match Envoy's.
+bazel_dep(name = "envoy_toolshed", version = "0.5.21.envoy")
+bazel_dep(name = "grpc", version = "1.83.0.envoy")
+bazel_dep(name = "librdkafka", version = "2.15.0.bcr.1")
+bazel_dep(name = "libsxg", version = "0.0.0-210708-beaa393.envoy")
+bazel_dep(name = "proxy-wasm-cpp-host", version = "0.0.0-260704-f2db56a.envoy.1")
+bazel_dep(name = "rules_python", version = "2.4.5")
+bazel_dep(name = "rules_rust", version = "0.74.0.envoy.1")
+bazel_dep(name = "zlib-ng", version = "2.3.3.bcr.2")
+
+bazel_dep(name = "platforms", version = "1.1.0")
+
+envoy_toolchains_ext = use_extension("@envoy//bazel:extensions.bzl", "envoy_toolchains_extension")
+use_repo(envoy_toolchains_ext, "clang_platform")
+
+# The set of extensions compiled into the binary: Envoy reads it from
+# @envoy_build_config, which is replaced with //bazel/extension_config.
+build_config = use_repo_rule("@bazel_tools//tools/build_defs/repo:local.bzl", "local_repository")
+
+build_config(
+    name = "envoy_build_config",
+    path = "bazel/extension_config",
+)
+
+envoy_build_config_ext = use_extension("@envoy//bazel:extensions.bzl", "envoy_build_config_ext")
+
+override_repo(
+    envoy_build_config_ext,
+    envoy_build_config = "envoy_build_config",
+)
+
+# The C++ toolchain is Envoy's: a pinned LLVM with its own libc++ and a
+# sysroot, registered by the envoy module. Nothing is taken from the host.
+# Envoy's default sysroot has glibc 2.31; this one has 2.28, as the Istio
+# release binaries do, so the binary also runs on older base images.
+sysroot_ext = use_extension("@envoy_toolshed//sysroot:extensions.bzl", "sysroot_extension")
+sysroot_ext.setup(
+    glibc_version = "2.28",
+    name_prefix = "istio",
+    # Must match the stdcc_version of Envoy's own sysroot_ext.setup().
+    stdcc_version = "13",
+)
+use_repo(sysroot_ext, "istio_sysroot_linux_amd64", "istio_sysroot_linux_arm64")
+
+override_repo(
+    sysroot_ext,
+    sysroot_linux_amd64 = "istio_sysroot_linux_amd64",
+    sysroot_linux_arm64 = "istio_sysroot_linux_arm64",
+)
+
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(
+    is_default = True,
+    python_version = "3.12",
+)
+
+####################################################################################
+# Go: pilot-agent
+####################################################################################
+
+# pilot-agent is built from source: go.mod pins istio.io/istio at a commit, and
+# //cmd/pilot-agent is its main package. Versions must match Envoy's.
+bazel_dep(name = "rules_go", version = "0.63.0")
+bazel_dep(name = "gazelle", version = "0.54.0")
+
+# Envoy declares its Go SDK as a dev dependency, so the root module has to
+# declare one. The version is the `go` line of go.mod.
+go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
+go_sdk.from_file(go_mod = "//:go.mod")
+
+go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
+go_deps.from_file(go_mod = "//:go.mod")
+
+# Istio's modules commit their generated .pb.go files; use those instead of
+# generating from the .proto files next to them.
+[
+    go_deps.gazelle_override(
+        directives = ["gazelle:proto disable_global"],
+        path = path,
+    )
+    for path in [
+        "istio.io/api",
+        "istio.io/istio",
+    ]
+]
+# The image takes the Envoy bootstrap template from the same istio/istio
+# commit as pilot-agent, which reads it; the patch only exports the file.
+go_deps.module_override(
+    patch_strip = 1,
+    patches = ["//bazel/istio:export_bootstrap_template.patch"],
+    path = "istio.io/istio",
+)
+use_repo(
+    go_deps,
+    "com_github_kimmachinegun_automemlimit",
+    "io_istio_api",
+    "io_istio_istio",
+)
+
+####################################################################################
+# Container image
+####################################################################################
+
+bazel_dep(name = "rules_img", version = "0.3.25")
+
+# The base image istio/istio builds its distroless proxyv2 on: BASE_VERSION in
+# its Makefile.core.mk, here docker.io/istio/iptables:master-2026-10-21T15-15-01,
+# pinned by index digest. //:image_test reads the base layers, so they are
+# fetched with the repository ("eager") rather than by a build action, which
+# keeps build actions off the network and lets them run on remote executors.
+pull = use_repo_rule("@rules_img//img:pull.bzl", "pull")
+
+pull(
+    name = "istio_iptables",
+    digest = "sha256:d435eefd60345fb59656a82979f26b1ddc9dc26d10fdef92391234aaffe2bb46",
+    layer_handling = "eager",
+    registry = "index.docker.io",
+    repository = "istio/iptables",
+)

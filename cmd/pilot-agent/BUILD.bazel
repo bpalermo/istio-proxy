@@ -1,0 +1,36 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("//bazel:versions.bzl", "ISTIO_SHA")
+
+# main.go is istio/istio's pilot/cmd/pilot-agent/main.go, unchanged. It is
+# copied because a main package of another module cannot be given link-time
+# version values from here.
+go_library(
+    name = "pilot-agent_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/bpalermo/istio-proxy/cmd/pilot-agent",
+    visibility = ["//visibility:private"],
+    deps = [
+        "@com_github_kimmachinegun_automemlimit//:automemlimit",
+        "@io_istio_api//mesh/v1alpha1",
+        "@io_istio_istio//pilot/cmd/pilot-agent/app",
+        "@io_istio_istio//pkg/istio-agent",
+        "@io_istio_istio//pkg/log",
+        "@io_istio_istio//pkg/security",
+        "@io_istio_istio//security/pkg/nodeagent/sds",
+    ],
+)
+
+go_binary(
+    name = "pilot-agent",
+    embed = [":pilot-agent_lib"],
+    pure = "on",
+    static = "on",
+    visibility = ["//visibility:public"],
+    # What istio/istio's common/scripts/report_build_info.sh stamps.
+    x_defs = {
+        "istio.io/istio/pkg/version.buildVersion": ISTIO_SHA,
+        "istio.io/istio/pkg/version.buildGitRevision": ISTIO_SHA,
+        "istio.io/istio/pkg/version.buildStatus": "Clean",
+        "istio.io/istio/pkg/version.buildTag": ISTIO_SHA,
+    },
+)
