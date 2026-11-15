@@ -88,6 +88,9 @@ image_push(
     image = ":image",
     registry = "index.docker.io",
     repository = "palermo/istio-proxy",
+    # Stamp the tag without --stamp, which would stamp, and so rebuild, Envoy
+    # too. Only the tag expansion reads the workspace status.
+    stamp = "force",
     tag_list = ["{{.STABLE_GIT_COMMIT}}"],
 )
 

@@ -64,6 +64,10 @@ build:ci --config=release
 build:ci --config=ci-remote-cache
 build:ci --build_metadata=VISIBILITY=PUBLIC
 build:ci --build_metadata=ROLE=CI
+# Pull requests read the remote cache but do not write to it; only builds of
+# main, with the release environment's key, populate it.
+build:ci-pr --noremote_upload_local_results
+
 # CI must build what the committed lockfile describes.
 common:ci --lockfile_mode=error
 # Actions logs are not a terminal: print plain progress lines, one a minute,

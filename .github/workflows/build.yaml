@@ -18,6 +18,9 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    # Its BUILDBUDDY_ORG_API_KEY can write to the remote cache, which the
+    # repository-level key used by pull requests cannot. Limited to main.
+    environment: release
     steps:
       - name: Maximize build space
         uses: AdityaGarg8/remove-unwanted-software@36765610732de8ee2e81a5c6c231506e2b5cabcf # v5.1
