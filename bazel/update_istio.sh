@@ -24,7 +24,7 @@ cd "${ROOT}"
 VERSIONS=bazel/versions.bzl
 
 if [[ -z "${ISTIO_SHA}" ]]; then
-  ISTIO_SHA="$(git ls-remote https://github.com/istio/istio "refs/heads/${UPDATE_BRANCH}" | awk '{print $1}')"
+	ISTIO_SHA="$(git ls-remote https://github.com/istio/istio "refs/heads/${UPDATE_BRANCH}" | awk '{print $1}')"
 fi
 
 WORK="$(mktemp -d)"
@@ -37,8 +37,8 @@ curl -sSfL "${ISTIO_RAW}/pilot/cmd/pilot-agent/main.go" -o "${WORK}/main.go"
 
 PROXY_SHA="$(jq -r '.[] | select(.name == "PROXY_REPO_SHA") | .lastStableSHA' "${WORK}/istio.deps")"
 if ! grep -Eq '^[0-9a-f]{40}$' <<<"${PROXY_SHA}"; then
-  echo "could not read PROXY_REPO_SHA from istio.deps" >&2
-  exit 1
+	echo "could not read PROXY_REPO_SHA from istio.deps" >&2
+	exit 1
 fi
 
 PROXY_RAW="https://raw.githubusercontent.com/istio/proxy/${PROXY_SHA}"
@@ -64,7 +64,7 @@ ENVOY_SHA="${ENVOY_SHA}" bazel/update_envoy.sh
 
 BASE_VERSION="$(grep -Pom1 '^BASE_VERSION \?= \K\S+' "${WORK}/Makefile.core.mk")"
 if ! grep -q "iptables:${BASE_VERSION}" MODULE.bazel; then
-  echo "NOTE: istio/istio now builds on base ${BASE_VERSION}; update the istio_iptables digest and its comment in MODULE.bazel" >&2
+	echo "NOTE: istio/istio now builds on base ${BASE_VERSION}; update the istio_iptables digest and its comment in MODULE.bazel" >&2
 fi
 
 echo "Istio is now ${ISTIO_SHA}, istio/proxy ${PROXY_SHA}, Envoy ${ENVOY_SHA}"
