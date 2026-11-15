@@ -42,8 +42,10 @@ jobs:
         run: |
           out="$(bazel run --config=ci --config=ci-pr --remote_header=x-buildbuddy-api-key=${{ secrets.BUILDBUDDY_ORG_API_KEY }} //:format.check 2>&1)" || { echo "${out}"; echo "::error::run 'bazel run //:format'" >&2; exit 1; }
           echo "${out}"
+          # --color=yes (the ci config) can put an escape code before a line.
+          plain="$(sed 's/\x1b\[[0-9;]*m//g' <<<"${out}")"
           for language in Starlark Shell; do
-            if ! grep -q "^Formatted ${language} " <<<"${out}"; then
+            if ! grep -q "^Formatted ${language} " <<<"${plain}"; then
               echo "::error::the formatter did not run for ${language}" >&2
               exit 1
             fi
