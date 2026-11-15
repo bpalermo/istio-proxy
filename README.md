@@ -50,8 +50,8 @@ commit it was built against, which names the Envoy commit.
 ## Updating
 
 ```sh
-scripts/update_istio.sh                      # latest istio/istio master
-ISTIO_SHA=<commit> scripts/update_istio.sh   # a given commit
+bazel/update_istio.sh                      # latest istio/istio master
+ISTIO_SHA=<commit> bazel/update_istio.sh   # a given commit
 ```
 
 This moves all three commits and the files that follow them: `go.mod`,

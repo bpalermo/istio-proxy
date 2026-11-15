@@ -5,7 +5,7 @@ module(name = "bpalermo_istio_proxy")
 ####################################################################################
 
 # Envoy is not published to a module registry, so it is fetched as a pinned
-# GitHub archive. scripts/update_envoy.sh moves the pin and everything that has
+# GitHub archive. bazel/update_envoy.sh moves the pin and everything that has
 # to move with it (the versions below, envoy.bazelrc, .bazelversion,
 # ENVOY_VERSION.txt, MODULE.bazel.lock).
 #

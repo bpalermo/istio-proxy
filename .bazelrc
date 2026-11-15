@@ -1,5 +1,5 @@
 # Envoy's own build options, copied from the pinned Envoy commit by
-# scripts/update_envoy.sh. Do not edit envoy.bazelrc by hand.
+# bazel/update_envoy.sh. Do not edit envoy.bazelrc by hand.
 import %workspace%/envoy.bazelrc
 
 # The C++ toolchain is Envoy's hermetic LLVM; never probe the host for one.
