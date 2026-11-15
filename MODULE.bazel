@@ -50,7 +50,6 @@ bazel_dep(name = "proxy-wasm-cpp-host", version = "0.0.0-260704-f2db56a.envoy.1"
 bazel_dep(name = "rules_python", version = "2.4.5")
 bazel_dep(name = "rules_rust", version = "0.74.0.envoy.1")
 bazel_dep(name = "zlib-ng", version = "2.3.3.bcr.2")
-
 bazel_dep(name = "platforms", version = "1.1.0")
 
 # istio.io/istio needs the Go module cel.dev/expr at this version, and Gazelle
@@ -115,8 +114,24 @@ bazel_dep(name = "gazelle", version = "0.54.0")
 go_sdk = use_extension("@rules_go//go:extensions.bzl", "go_sdk")
 go_sdk.from_file(go_mod = "//:go.mod")
 
+# Static analysis, run as part of compiling every Go package of this module
+# (and of none of its dependencies): a finding fails the build. //:nogo says
+# which analyzers.
+go_sdk.nogo(nogo = "//:nogo")
+
 go_deps = use_extension("@gazelle//:extensions.bzl", "go_deps")
 go_deps.from_file(go_mod = "//:go.mod")
+
+# The analyzers of //:nogo come from golang.org/x/tools, and rules_go asks for
+# a version too old to read the export data of the Go SDK above. This is the
+# version Go itself selects for this module (`go list -m golang.org/x/tools`);
+# move it with the Go SDK. It is not in go.mod because no package of it is
+# built into pilot-agent.
+go_deps.module(
+    path = "golang.org/x/tools",
+    sum = "h1:k4Xc/1Om9jwkBJBo4NVLMSARBoWtK10mx+W5BnXCeAI=",
+    version = "v0.51.0",
+)
 
 # Istio's modules commit their generated .pb.go files; use those instead of
 # generating from the .proto files next to them.
@@ -130,6 +145,7 @@ go_deps.from_file(go_mod = "//:go.mod")
         "istio.io/istio",
     ]
 ]
+
 # The image takes the Envoy bootstrap template from the same istio/istio
 # commit as pilot-agent, which reads it; the patch only exports the file.
 go_deps.module_override(
@@ -142,6 +158,7 @@ use_repo(
     "com_github_kimmachinegun_automemlimit",
     "io_istio_api",
     "io_istio_istio",
+    "org_golang_x_tools",
 )
 
 ####################################################################################
@@ -164,3 +181,13 @@ pull(
     registry = "index.docker.io",
     repository = "istio/iptables",
 )
+
+####################################################################################
+# Formatting and linting
+####################################################################################
+
+# //bazel/format formats and checks Starlark (buildifier, with its lint
+# warnings), Go and shell; //bazel/lint has the shellcheck aspect.
+bazel_dep(name = "aspect_rules_lint", version = "2.9.1")
+bazel_dep(name = "buildifier_prebuilt", version = "10.1.0")
+bazel_dep(name = "rules_shell", version = "0.8.0")

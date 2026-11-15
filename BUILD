@@ -1,4 +1,5 @@
 load("@envoy//bazel:envoy_build_system.bzl", "envoy_cc_binary")
+load("@rules_go//go:def.bzl", "TOOLS_NOGO", "nogo")
 load("@rules_img//img:image.bzl", "image_index", "image_manifest")
 load("@rules_img//img:layer.bzl", "file_metadata", "image_layer")
 load("@rules_img//img:load.bzl", "image_load")
@@ -6,7 +7,29 @@ load("@rules_img//img:push.bzl", "image_push")
 load("@rules_img//img:test.bzl", "image_structure_test")
 load("//bazel:versions.bzl", "ISTIO_PROXY_SHA")
 
-exports_files(["LICENSE"])
+exports_files([
+    ".shellcheckrc",
+    "LICENSE",
+])
+
+# The analyzers this module's Go packages are compiled with (go_sdk.nogo in
+# MODULE.bazel): the ones `go vet` runs and the rest of the x/tools set that
+# rules_go recommends. A finding fails the build.
+nogo(
+    name = "nogo",
+    visibility = ["//visibility:public"],
+    deps = TOOLS_NOGO,
+)
+
+alias(
+    name = "format",
+    actual = "//bazel/format",
+)
+
+alias(
+    name = "format.check",
+    actual = "//bazel/format:format.check",
+)
 
 # envoy, the layers and the manifest are tagged "manual" to keep them out of
 # //...: :image builds them once per architecture, and building them for the
