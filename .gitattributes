@@ -1,0 +1,4 @@
+# Copied verbatim from upstream, and overwritten by bazel/update_istio.sh:
+# not reformatted, so they stay identical to the upstream files.
+bazel/extension_config/istio_extensions_build_config.bzl rules-lint-ignored=true
+cmd/pilot-agent/main.go rules-lint-ignored=true

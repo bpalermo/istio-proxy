@@ -22,15 +22,15 @@ ENVOY_REPO="$(grep -Pom1 '^ENVOY_REPO = "\K[a-zA-Z-]+' "${MODULE_BAZEL}")"
 RAW="https://raw.githubusercontent.com/${ENVOY_ORG}/${ENVOY_REPO}"
 
 if [[ -z "${ENVOY_SHA}" ]]; then
-  ENVOY_SHA="$(git ls-remote "https://github.com/${ENVOY_ORG}/${ENVOY_REPO}" "refs/heads/${UPDATE_BRANCH}" | awk '{print $1}')"
+	ENVOY_SHA="$(git ls-remote "https://github.com/${ENVOY_ORG}/${ENVOY_REPO}" "refs/heads/${UPDATE_BRANCH}" | awk '{print $1}')"
 fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
 
 DATE="$(curl -sSfL -H 'Accept: application/vnd.github.v3+json' \
-  "https://api.github.com/repos/${ENVOY_ORG}/${ENVOY_REPO}/commits/${ENVOY_SHA}" |
-  jq -r '.commit.committer.date' | cut -dT -f1)"
+	"https://api.github.com/repos/${ENVOY_ORG}/${ENVOY_REPO}/commits/${ENVOY_SHA}" |
+	jq -r '.commit.committer.date' | cut -dT -f1)"
 
 curl -sSfL "https://github.com/${ENVOY_ORG}/${ENVOY_REPO}/archive/${ENVOY_SHA}.tar.gz" -o "${WORK}/envoy.tar.gz"
 SHA256="$(sha256sum "${WORK}/envoy.tar.gz" | awk '{print $1}')"
@@ -44,8 +44,8 @@ curl -sSfL "${RAW}/${ENVOY_SHA}/api/MODULE.bazel" -o "${WORK}/envoy_api.MODULE.b
 
 ENVOY_VERSION="$(cat "${WORK}/VERSION.txt")"
 if ! grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-dev)?$' <<<"${ENVOY_VERSION}"; then
-  echo "unexpected Envoy VERSION.txt: ${ENVOY_VERSION}" >&2
-  exit 1
+	echo "unexpected Envoy VERSION.txt: ${ENVOY_VERSION}" >&2
+	exit 1
 fi
 
 cp "${WORK}/bazelversion" .bazelversion
@@ -60,7 +60,7 @@ sed -i "s/^ENVOY_SHA256 = .*/ENVOY_SHA256 = \"${SHA256}\"/" "${MODULE_BAZEL}"
 # pinned to Envoy's version; envoy and envoy_api themselves to VERSION.txt.
 # rules_img is not Envoy's and is left alone.
 sed -nE 's/^bazel_dep\(name = "([^"]+)", version = "([^"]+)".*/\1\t\2/p' \
-  "${WORK}/envoy.MODULE.bazel" "${WORK}/envoy_api.MODULE.bazel" >"${WORK}/versions.tsv"
+	"${WORK}/envoy.MODULE.bazel" "${WORK}/envoy_api.MODULE.bazel" >"${WORK}/versions.tsv"
 
 awk -v versions="${WORK}/versions.tsv" -v envoy_version="${ENVOY_VERSION}" '
 BEGIN {
@@ -87,8 +87,8 @@ BEGIN {
 }' "${MODULE_BAZEL}" >"${WORK}/MODULE.bazel"
 
 if [[ "$(wc -l <"${WORK}/MODULE.bazel")" -ne "$(wc -l <"${MODULE_BAZEL}")" ]]; then
-  echo "MODULE.bazel rewrite changed the line count; aborting" >&2
-  exit 1
+	echo "MODULE.bazel rewrite changed the line count; aborting" >&2
+	exit 1
 fi
 cp "${WORK}/MODULE.bazel" "${MODULE_BAZEL}"
 

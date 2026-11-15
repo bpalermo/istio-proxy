@@ -64,6 +64,18 @@ build:ci --config=release
 build:ci --config=ci-remote-cache
 build:ci --build_metadata=VISIBILITY=PUBLIC
 build:ci --build_metadata=ROLE=CI
+# rules_lint reports its use to Aspect unless told not to.
+common --repo_env=ASPECT_TOOLS_TELEMETRY=-all
+
+# The linters that run as aspects (bazel/lint/linters.bzl). Alone,
+# `--config=lint` only reports; with fail_on_violation, as in CI, a finding
+# fails the build.
+build:lint --aspects=//bazel/lint:linters.bzl%shellcheck
+
+# CI: a lint finding fails.
+build:ci --config=lint
+build:ci --@aspect_rules_lint//lint:fail_on_violation
+
 # Pull requests read the remote cache but do not write to it; only builds of
 # main, with the release environment's key, populate it.
 build:ci-pr --noremote_upload_local_results

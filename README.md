@@ -35,6 +35,21 @@ bazel run //:load
 `user.bazelrc` is read if present and is not committed; put a remote cache
 configuration there.
 
+## Formatting and linting
+
+```sh
+bazel run //:format               # format Starlark, Go and shell
+bazel run //:format.check         # what CI runs: fails if a file would change
+bazel build --config=lint //...   # shellcheck on the scripts, as an aspect
+```
+
+`//:format` uses buildifier (and applies its lint fixes), gofumpt and shfmt.
+The Go analyzers of `//:nogo` run as part of every build of this repository's
+Go packages, and a finding fails it. CI runs the format check, and builds with
+`--config=ci`, where a shellcheck finding fails the build too. Files copied
+verbatim from upstream are marked `rules-lint-ignored` in `.gitattributes` and
+left as they are.
+
 ## What is pinned where
 
 | Pin | Where |
