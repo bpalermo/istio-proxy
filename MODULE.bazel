@@ -53,6 +53,10 @@ bazel_dep(name = "zlib-ng", version = "2.3.3.bcr.2")
 
 bazel_dep(name = "platforms", version = "1.1.0")
 
+# istio.io/istio needs the Go module cel.dev/expr at this version, and Gazelle
+# takes that module from cel-spec; Envoy's cel-cpp alone asks for 0.25.1.
+bazel_dep(name = "cel-spec", version = "0.25.3")
+
 envoy_toolchains_ext = use_extension("@envoy//bazel:extensions.bzl", "envoy_toolchains_extension")
 use_repo(envoy_toolchains_ext, "clang_platform")
 
