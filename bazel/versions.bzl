@@ -1,6 +1,6 @@
 """The Istio commits this build corresponds to.
 
-scripts/update_istio.sh keeps these in step with go.mod. The Envoy commit is in
+bazel/update_istio.sh keeps these in step with go.mod. The Envoy commit is in
 MODULE.bazel.
 """
 

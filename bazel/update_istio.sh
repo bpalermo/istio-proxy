@@ -5,10 +5,10 @@
 #
 #   istio/istio  -> go.mod (pilot-agent, bootstrap template), ISTIO_SHA
 #   istio/proxy  -> ISTIO_PROXY_SHA, bazel/extension_config/istio_extensions_build_config.bzl
-#   envoy        -> MODULE.bazel and the rest, through scripts/update_envoy.sh
+#   envoy        -> MODULE.bazel and the rest, through bazel/update_envoy.sh
 #
-#   scripts/update_istio.sh              # latest commit of istio/istio master
-#   ISTIO_SHA=<commit> scripts/update_istio.sh
+#   bazel/update_istio.sh              # latest commit of istio/istio master
+#   ISTIO_SHA=<commit> bazel/update_istio.sh
 #
 # The base image is not moved: when BASE_VERSION in istio/istio's
 # Makefile.core.mk changes, the script says so and the digest in MODULE.bazel
@@ -60,7 +60,7 @@ sed -i "s/${OLD_PROXY_SHA}/${PROXY_SHA}/" testdata/image.yaml
 
 cp "${WORK}/extensions_build_config.bzl" bazel/extension_config/istio_extensions_build_config.bzl
 
-ENVOY_SHA="${ENVOY_SHA}" scripts/update_envoy.sh
+ENVOY_SHA="${ENVOY_SHA}" bazel/update_envoy.sh
 
 BASE_VERSION="$(grep -Pom1 '^BASE_VERSION \?= \K\S+' "${WORK}/Makefile.core.mk")"
 if ! grep -q "iptables:${BASE_VERSION}" MODULE.bazel; then

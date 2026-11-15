@@ -2,7 +2,7 @@
 
 istio_extensions_build_config.bzl is istio/proxy's
 bazel/extension_config/extensions_build_config.bzl, unchanged, and is replaced
-by scripts/update_istio.sh. Extensions are added here, not there.
+by bazel/update_istio.sh. Extensions are added here, not there.
 """
 
 load(

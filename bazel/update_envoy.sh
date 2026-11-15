@@ -3,10 +3,10 @@
 # Moves the Envoy pin in MODULE.bazel and everything that has to move with it.
 # Adapted from istio/proxy's scripts/update_envoy.sh.
 #
-#   scripts/update_envoy.sh              # latest commit of envoyproxy/envoy main
-#   ENVOY_SHA=<commit> scripts/update_envoy.sh
+#   bazel/update_envoy.sh              # latest commit of envoyproxy/envoy main
+#   ENVOY_SHA=<commit> bazel/update_envoy.sh
 #
-# Normally run by scripts/update_istio.sh, with the commit istio/proxy pins.
+# Normally run by bazel/update_istio.sh, with the commit istio/proxy pins.
 
 set -euo pipefail
 
