@@ -1,0 +1,4 @@
+--- /dev/null
++++ b/tools/packaging/common/BUILD.bazel
+@@ -0,0 +1 @@
++exports_files(["envoy_bootstrap.json"])

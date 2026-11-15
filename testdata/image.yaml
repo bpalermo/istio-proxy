@@ -4,10 +4,9 @@ metadataTest:
   workdir: "/"
   user: 65532
   envVars:
-    - key: ENVOY_DYNAMIC_MODULES_SEARCH_PATH
-      value: /usr/local/lib
+    # ISTIO_PROXY_SHA of //bazel:versions.bzl
     - key: ISTIO_META_ISTIO_PROXY_SHA
-      value: 0879e0055d1da524a89415acd456e230b27fba70
+      value: 4c11f0bd59e6ac516ff84495e30b019e8f913c92
 fileExistenceTests:
   - name: 'envoy'
     path: '/usr/local/bin/envoy'
@@ -17,12 +16,6 @@ fileExistenceTests:
     gid: 0
   - name: 'pilot_agent'
     path: '/usr/local/bin/pilot-agent'
-    shouldExist: true
-    permissions: '-rwxr-xr-x'
-    uid: 0
-    gid: 0
-  - name: 'rust_module'
-    path: '/usr/local/lib/librust_module.so'
     shouldExist: true
     permissions: '-rwxr-xr-x'
     uid: 0

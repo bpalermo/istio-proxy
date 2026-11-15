@@ -33,5 +33,8 @@ if [ -z "${BUILD_SCM_STATUS}" ]; then
 fi
 
 echo "BUILD_SCM_REVISION ${BUILD_SCM_REVISION}"
+# Stable, unlike the keys above: the image is pushed under this tag, and a push
+# must be redone when the commit changes.
+echo "STABLE_GIT_COMMIT ${BUILD_SCM_REVISION}"
 echo "BUILD_SCM_STATUS ${BUILD_SCM_STATUS}"
 echo "BUILD_CONFIG ${BUILD_CONFIG:-default}"
